@@ -12,11 +12,11 @@ import (
 )
 
 const (
-	tcpListenPort   = 30000        // Where we listen for factProxy TCP connections
-	targetDomain    = "m45sci.xyz" // Target game server domain or IP
-	targetPortStart = 10000        // Base game server UDP port
-	proxyPortStart  = 20000        // Base proxy UDP port
-	proxyPortEnd    = 20018        // End of proxy UDP port range
+	tcpListenPort   = 30000       // Where we listen for factProxy TCP connections
+	targetDomain    = "127.0.0.1" // Target game server domain or IP
+	targetPortStart = 10000       // Base game server UDP port
+	proxyPortStart  = 10000       // Base proxy UDP port
+	proxyPortEnd    = 10017       // End of proxy UDP port range
 	udpPortOffset   = proxyPortStart - targetPortStart
 )
 

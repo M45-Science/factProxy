@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	serverAddress = "127.0.0.1:30000"
-	udpPortStart  = 20000
-	udpPortEnd    = 20018
+	serverAddress = "m45sci.xyz:30000"
+	udpPortStart  = 10000
+	udpPortEnd    = 10017
 )
 
 type FrameType byte
