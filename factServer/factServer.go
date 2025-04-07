@@ -21,7 +21,7 @@ const (
 	protoTCP   = 0x02
 	startPort  = 10000
 	endPort    = 10018
-	targetHost = "m45sci.xyz"
+	targetHost = "127.0.0.1"
 )
 
 var verbose = true

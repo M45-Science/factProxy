@@ -18,7 +18,7 @@ import (
 const (
 	startPort  = 20000
 	endPort    = 20018
-	serverHost = "127.0.0.1"
+	serverHost = "m45sci.xyz"
 	serverPort = 30000
 	protoUDP   = 0x01
 )
