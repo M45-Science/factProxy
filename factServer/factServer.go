@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -11,35 +12,29 @@ import (
 )
 
 const (
-	listenAddress = ":30000"           // TCP address to listen on for proxy connections
-	targetAddress = "m45sci.xyz:10000" // UDP target (game server address and port)
+	tcpListenPort   = 30000        // Where we listen for factProxy TCP connections
+	targetDomain    = "m45sci.xyz" // Target game server domain or IP
+	targetPortStart = 10000        // Base game server UDP port
+	proxyPortStart  = 20000        // Base proxy UDP port
+	proxyPortEnd    = 20018        // End of proxy UDP port range
+	udpPortOffset   = proxyPortStart - targetPortStart
 )
 
-// FrameType defines the message type in the framing protocol
 type FrameType byte
 
 const (
-	TypeRequest  FrameType = 0 // Message from proxy to server (UDP request)
-	TypeResponse FrameType = 1 // Message from server to proxy (UDP response)
+	TypeRequest  FrameType = 0
+	TypeResponse FrameType = 1
 )
 
-// compressData compresses a byte slice using zlib and returns the compressed data.
 func compressData(data []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	w := zlib.NewWriter(&buf)
 	_, err := w.Write(data)
-	if err != nil {
-		w.Close()
-		return nil, err
-	}
-	err = w.Close()
-	if err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	w.Close()
+	return buf.Bytes(), err
 }
 
-// decompressData decompresses a zlib-compressed byte slice.
 func decompressData(data []byte) ([]byte, error) {
 	r, err := zlib.NewReader(bytes.NewReader(data))
 	if err != nil {
@@ -52,162 +47,126 @@ func decompressData(data []byte) ([]byte, error) {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	// Resolve the UDP target address (the actual game server)
-	targetUDPAddr, err := net.ResolveUDPAddr("udp", targetAddress)
+	listenAddr := fmt.Sprintf(":%d", tcpListenPort)
+	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		log.Fatalf("Failed to resolve target address %s: %v", targetAddress, err)
+		log.Fatalf("[FATAL] Failed to listen on %s: %v", listenAddr, err)
 	}
-
-	// Start listening for incoming TCP connections from factProxy
-	listener, err := net.Listen("tcp", listenAddress)
-	if err != nil {
-		log.Fatalf("Failed to listen on %s: %v", listenAddress, err)
-	}
-	log.Printf("factServer listening on %s (forwarding UDP to %s)", listenAddress, targetAddress)
+	log.Printf("[START] factServer listening on TCP %s", listenAddr)
 
 	for {
-		tcpConn, err := listener.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("TCP accept error: %v", err)
+			log.Printf("[ERR] Accept failed: %v", err)
 			continue
 		}
-		log.Printf("Accepted connection from proxy %s", tcpConn.RemoteAddr())
-		go handleConnection(tcpConn, targetUDPAddr)
+		log.Printf("[CONNECT] From proxy %s", conn.RemoteAddr())
+		go handleConnection(conn)
 	}
 }
 
-// handleConnection handles a single proxy connection over TCP.
-func handleConnection(conn net.Conn, targetAddr *net.UDPAddr) {
+func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// Map of UDP port -> UDP connection (for sending to m45sci.xyz using that source port)
-	udpConns := make(map[uint16]*net.UDPConn)
-	// Mutex to synchronize writes on the TCP connection (for sending responses back)
 	var tcpWriteMu sync.Mutex
+	udpConns := make(map[uint16]*net.UDPConn)
 
-	header := make([]byte, 7) // buffer for 7-byte message header
+	header := make([]byte, 7)
 	for {
-		// Read the message header from the proxy
-		if _, err := io.ReadFull(conn, header); err != nil {
-			if err == io.EOF {
-				log.Printf("Proxy %s disconnected", conn.RemoteAddr())
-			} else {
-				log.Printf("Error reading from proxy connection: %v", err)
-			}
-			break // exit the loop on connection error/closure
+		_, err := io.ReadFull(conn, header)
+		if err != nil {
+			log.Printf("[DISCONNECT] %s (%v)", conn.RemoteAddr(), err)
+			break
 		}
+
 		frameType := FrameType(header[0])
 		port := binary.BigEndian.Uint16(header[1:3])
 		length := binary.BigEndian.Uint32(header[3:7])
 
 		if frameType != TypeRequest {
-			log.Printf("Warning: unexpected frame type %d from proxy, skipping", frameType)
-			if length > 0 {
-				// Discard the payload of an unknown message type
-				io.CopyN(io.Discard, conn, int64(length))
-			}
+			log.Printf("[WARN] Unknown frame type %d", frameType)
+			io.CopyN(io.Discard, conn, int64(length))
 			continue
 		}
 
-		// Read the compressed UDP payload from the proxy
+		if port < proxyPortStart || port > proxyPortEnd {
+			log.Printf("[ERR] Port %d outside proxy range (%d–%d)", port, proxyPortStart, proxyPortEnd)
+			io.CopyN(io.Discard, conn, int64(length))
+			continue
+		}
+
 		payload := make([]byte, length)
 		if _, err := io.ReadFull(conn, payload); err != nil {
-			log.Printf("Error reading request payload (port %d): %v", port, err)
+			log.Printf("[ERR] Read payload: %v", err)
 			break
 		}
-		log.Printf("Received UDP request from proxy on port %d (compressed %d bytes)", port, length)
 
-		// Decompress the payload to get the original UDP data
 		data, err := decompressData(payload)
 		if err != nil {
-			log.Printf("Decompression error on port %d: %v (dropping packet)", port, err)
-			continue // skip this packet on error
+			log.Printf("[ERR] Decompression on port %d: %v", port, err)
+			continue
 		}
 
-		// Get or create a UDP socket for this port to communicate with the target server
-		udpConn, exists := udpConns[port]
-		if !exists {
-			// Try to bind a UDP socket to the same port as the client
-			localAddr := net.UDPAddr{Port: int(port)}
-			uconn, err := net.DialUDP("udp", &localAddr, targetAddr)
+		mappedPort := port - udpPortOffset
+		targetAddr := fmt.Sprintf("%s:%d", targetDomain, mappedPort)
+
+		udpConn, ok := udpConns[port]
+		if !ok {
+			raddr, err := net.ResolveUDPAddr("udp", targetAddr)
 			if err != nil {
-				log.Printf("Port %d unavailable, using an ephemeral port: %v", port, err)
-				uconn, err = net.DialUDP("udp", nil, targetAddr)
-				if err != nil {
-					log.Printf("Failed to open UDP socket for port %d: %v (dropping packet)", port, err)
-					continue
-				}
-				// Log which ephemeral port was chosen for this mapping
-				localPort := uconn.LocalAddr().(*net.UDPAddr).Port
-				log.Printf("Using UDP port %d for outgoing traffic (mapped from port %d)", localPort, port)
-			} else {
-				log.Printf("Opened UDP socket on port %d for outgoing traffic", port)
+				log.Printf("[ERR] Resolve %s: %v", targetAddr, err)
+				continue
 			}
-			udpConn = uconn
+			udpConn, err = net.DialUDP("udp", nil, raddr)
+			if err != nil {
+				log.Printf("[ERR] DialUDP %s: %v", targetAddr, err)
+				continue
+			}
 			udpConns[port] = udpConn
 
-			// Start a goroutine to listen for responses from the target on this UDP socket
 			go func(p uint16, uconn *net.UDPConn) {
 				buf := make([]byte, 65535)
 				for {
 					n, _, err := uconn.ReadFromUDP(buf)
 					if err != nil {
-						if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
-							log.Printf("Temporary UDP read error on port %d: %v", p, err)
-							continue
-						}
-						// Socket closed or fatal error
-						log.Printf("UDP socket for port %d closed: %v", p, err)
+						log.Printf("[ERR] UDP recv on port %d: %v", p, err)
 						return
 					}
-					if n == 0 {
-						continue
-					}
-					log.Printf("Received UDP response from target for port %d (%d bytes)", p, n)
-					respData := buf[:n]
-
-					// Compress the response data
-					compData, err := compressData(respData)
+					resp := buf[:n]
+					comp, err := compressData(resp)
 					if err != nil {
-						log.Printf("Compression error on response for port %d: %v (dropping)", p, err)
+						log.Printf("[ERR] Compression resp port %d: %v", p, err)
 						continue
 					}
 
-					// Frame the response message for the proxy
-					respLen := uint32(len(compData))
-					frame := make([]byte, 7+respLen)
-					frame[0] = byte(TypeResponse)
-					binary.BigEndian.PutUint16(frame[1:3], p)
-					binary.BigEndian.PutUint32(frame[3:7], respLen)
-					copy(frame[7:], compData)
+					frame := new(bytes.Buffer)
+					frame.WriteByte(byte(TypeResponse))
+					binary.Write(frame, binary.BigEndian, p)
+					binary.Write(frame, binary.BigEndian, uint32(len(comp)))
+					frame.Write(comp)
 
-					// Send the response frame over TCP back to the proxy
 					tcpWriteMu.Lock()
-					_, err = conn.Write(frame)
+					_, err = conn.Write(frame.Bytes())
 					tcpWriteMu.Unlock()
 					if err != nil {
-						log.Printf("Error sending response to proxy (port %d): %v", p, err)
+						log.Printf("[ERR] TCP send resp port %d: %v", p, err)
 						return
 					}
-					log.Printf("Forwarded UDP response for port %d to proxy (compressed %d bytes)", p, len(compData))
+					log.Printf("[REPLY] ← m45sci.xyz:%d → proxy (%d bytes)", mappedPort, len(resp))
 				}
 			}(port, udpConn)
 		}
 
-		// Forward the original UDP payload to the target game server
 		_, err = udpConn.Write(data)
 		if err != nil {
-			log.Printf("Error sending UDP packet to target from port %d: %v", port, err)
-			// Continue to next message; do not break the connection on a single UDP send failure
+			log.Printf("[ERR] UDP send port %d: %v", port, err)
 			continue
 		}
-		log.Printf("Forwarded UDP packet to target from port %d (%d bytes)", port, len(data))
+		log.Printf("[FORWARD] UDP %d → %s (%d bytes)", port, targetAddr, len(data))
 	}
 
-	// Cleanup: close all UDP sockets associated with this connection
-	for p, uconn := range udpConns {
-		uconn.Close()
-		delete(udpConns, p)
+	for _, c := range udpConns {
+		c.Close()
 	}
-	log.Printf("Closed connection from proxy %s, cleaned up UDP sockets", conn.RemoteAddr())
+	log.Printf("[CLOSE] Cleaned up UDP sockets for %s", conn.RemoteAddr())
 }
