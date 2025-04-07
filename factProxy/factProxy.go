@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"encoding/binary"
 	"io"
 	"log"
@@ -13,15 +14,30 @@ import (
 
 const (
 	serverAddress = "m45sci.xyz:30000"
-	udpPortStart  = 10000
-	udpPortEnd    = 10017
+	udpPortStart  = 20000
+	udpPortEnd    = 20017
+	tickRate      = time.Second / 60 // 1/30th second flush
 )
 
 type FrameType byte
 
 const (
-	TypeRequest  FrameType = 0
-	TypeResponse FrameType = 1
+	TypeRequest      FrameType = 0
+	TypeResponse     FrameType = 1
+	TypeBatchRequest FrameType = 2
+	TypeBatchReply   FrameType = 3
+)
+
+type framedMessage struct {
+	port uint16
+	data []byte
+}
+
+var (
+	udpConns      = make(map[uint16]*net.UDPConn)
+	clientAddrMap sync.Map
+	outgoingQueue = make([]framedMessage, 0)
+	outMu         sync.Mutex
 )
 
 func compressData(data []byte) ([]byte, error) {
@@ -41,12 +57,6 @@ func decompressData(data []byte) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
-var (
-	udpConns      = make(map[uint16]*net.UDPConn)
-	clientAddrMap sync.Map
-	tcpWriteMu    sync.Mutex
-)
-
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
@@ -61,7 +71,7 @@ func main() {
 	}
 
 	for {
-		log.Printf("[CONNECTING] Attempting TCP to %s", serverAddress)
+		log.Printf("[CONNECTING] TCP → %s", serverAddress)
 		conn, err := net.Dial("tcp", serverAddress)
 		if err != nil {
 			log.Printf("[RETRY] TCP connect failed: %v", err)
@@ -69,107 +79,196 @@ func main() {
 			continue
 		}
 		log.Printf("[CONNECTED] TCP to %s", serverAddress)
-
 		runProxy(conn)
-
-		log.Printf("[DISCONNECTED] TCP connection lost, reconnecting...")
+		log.Printf("[DISCONNECTED] TCP lost, reconnecting...")
 		time.Sleep(2 * time.Second)
 	}
 }
 
 func runProxy(conn net.Conn) {
-	defer conn.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	go readFromTCP(conn)
+	var wg sync.WaitGroup
 
+	// TCP reader
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tcpReader(ctx, conn, cancel)
+	}()
+
+	// TCP batch writer
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tcpBatchWriter(ctx, conn, cancel)
+	}()
+
+	// UDP listeners
 	for port, udpConn := range udpConns {
-		go handleUDP(uint16(port), udpConn, conn)
+		wg.Add(1)
+		go func(p uint16, uc *net.UDPConn) {
+			defer wg.Done()
+			handleUDP(ctx, p, uc, cancel)
+		}(port, udpConn)
 	}
 
-	select {}
+	wg.Wait()
+	conn.Close()
+	log.Printf("[CLEANUP] TCP session closed")
 }
 
-func handleUDP(port uint16, udpConn *net.UDPConn, conn net.Conn) {
+func handleUDP(ctx context.Context, port uint16, udpConn *net.UDPConn, cancel context.CancelFunc) {
 	buf := make([]byte, 65535)
 	for {
-		n, clientAddr, err := udpConn.ReadFrom(buf)
-		if err != nil {
-			log.Printf("[ERR] UDP read on port %d: %v", port, err)
+		select {
+		case <-ctx.Done():
 			return
-		}
-		clientAddrMap.Store(port, clientAddr)
-		log.Printf("[RECV] UDP %d ← %s (%d bytes)", port, clientAddr.String(), n)
+		default:
+			udpConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			n, clientAddr, err := udpConn.ReadFrom(buf)
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				log.Printf("[ERR] UDP read %d: %v", port, err)
+				cancel()
+				return
+			}
+			clientAddrMap.Store(port, clientAddr)
 
-		compData, err := compressData(buf[:n])
-		if err != nil {
-			log.Printf("[ERR] Compression on port %d: %v", port, err)
-			continue
-		}
+			data := buf[:n]
+			log.Printf("[RECV] UDP %d ← %s (%d bytes)", port, clientAddr.String(), n)
 
-		frame := new(bytes.Buffer)
-		frame.WriteByte(byte(TypeRequest))
-		binary.Write(frame, binary.BigEndian, port)
-		binary.Write(frame, binary.BigEndian, uint32(len(compData)))
-		frame.Write(compData)
+			frame := new(bytes.Buffer)
+			frame.WriteByte(byte(TypeRequest))
+			binary.Write(frame, binary.BigEndian, port)
+			binary.Write(frame, binary.BigEndian, uint32(len(data)))
+			frame.Write(data)
 
-		tcpWriteMu.Lock()
-		_, err = conn.Write(frame.Bytes())
-		tcpWriteMu.Unlock()
-		if err != nil {
-			log.Printf("[ERR] TCP write failed on port %d: %v", port, err)
-			return
+			outMu.Lock()
+			outgoingQueue = append(outgoingQueue, framedMessage{
+				port: port,
+				data: frame.Bytes(),
+			})
+			outMu.Unlock()
 		}
-		log.Printf("[FORWARD] UDP %d → TCP (%d → %d bytes)", port, n, len(compData))
 	}
 }
 
-func readFromTCP(conn net.Conn) {
-	header := make([]byte, 7)
+func tcpBatchWriter(ctx context.Context, conn net.Conn, cancel context.CancelFunc) {
+	ticker := time.NewTicker(tickRate)
+	defer ticker.Stop()
+
 	for {
-		_, err := io.ReadFull(conn, header)
-		if err != nil {
-			log.Printf("[ERR] TCP read failed: %v", err)
+		select {
+		case <-ctx.Done():
 			return
-		}
-		frameType := FrameType(header[0])
-		port := binary.BigEndian.Uint16(header[1:3])
-		length := binary.BigEndian.Uint32(header[3:7])
+		case <-ticker.C:
+			outMu.Lock()
+			if len(outgoingQueue) == 0 {
+				outMu.Unlock()
+				continue
+			}
 
-		if frameType != TypeResponse {
-			log.Printf("[WARN] Unknown frame type: %d", frameType)
-			io.CopyN(io.Discard, conn, int64(length))
-			continue
-		}
+			var batchData bytes.Buffer
+			for _, msg := range outgoingQueue {
+				batchData.Write(msg.data)
+			}
+			outgoingQueue = outgoingQueue[:0]
+			outMu.Unlock()
 
-		payload := make([]byte, length)
-		if _, err := io.ReadFull(conn, payload); err != nil {
-			log.Printf("[ERR] Reading payload: %v", err)
+			comp, err := compressData(batchData.Bytes())
+			if err != nil {
+				log.Printf("[ERR] Compress batch: %v", err)
+				continue
+			}
+
+			frame := new(bytes.Buffer)
+			frame.WriteByte(byte(TypeBatchRequest))
+			binary.Write(frame, binary.BigEndian, uint32(len(comp)))
+			frame.Write(comp)
+
+			_, err = conn.Write(frame.Bytes())
+			if err != nil {
+				log.Printf("[ERR] TCP write failed: %v", err)
+				cancel()
+				return
+			}
+			log.Printf("[SEND] Batch (%d bytes compressed)", len(comp))
+		}
+	}
+}
+
+func tcpReader(ctx context.Context, conn net.Conn, cancel context.CancelFunc) {
+	for {
+		select {
+		case <-ctx.Done():
 			return
-		}
+		default:
+			header := make([]byte, 5)
+			if _, err := io.ReadFull(conn, header); err != nil {
+				log.Printf("[ERR] TCP read header: %v", err)
+				cancel()
+				return
+			}
+			frameType := FrameType(header[0])
+			length := binary.BigEndian.Uint32(header[1:5])
+			body := make([]byte, length)
+			if _, err := io.ReadFull(conn, body); err != nil {
+				log.Printf("[ERR] TCP read body: %v", err)
+				cancel()
+				return
+			}
 
-		data, err := decompressData(payload)
-		if err != nil {
-			log.Printf("[ERR] Decompression failed on port %d: %v", port, err)
-			continue
-		}
+			if frameType != TypeBatchReply {
+				log.Printf("[WARN] Unexpected frame type %d", frameType)
+				continue
+			}
 
-		addrVal, ok := clientAddrMap.Load(port)
-		if !ok {
-			log.Printf("[WARN] No known client for port %d", port)
-			continue
-		}
+			unzipped, err := decompressData(body)
+			if err != nil {
+				log.Printf("[ERR] Decompress batch: %v", err)
+				continue
+			}
 
-		udpConn := udpConns[port]
-		if udpConn == nil {
-			log.Printf("[ERR] No UDPConn for port %d", port)
-			continue
-		}
+			buf := bytes.NewBuffer(unzipped)
+			for buf.Len() >= 7 {
+				hdr := buf.Next(7)
+				ptype := FrameType(hdr[0])
+				port := binary.BigEndian.Uint16(hdr[1:3])
+				size := binary.BigEndian.Uint32(hdr[3:7])
+				if buf.Len() < int(size) {
+					log.Printf("[WARN] Truncated inner frame")
+					break
+				}
+				payload := buf.Next(int(size))
 
-		_, err = udpConn.WriteTo(data, addrVal.(net.Addr))
-		if err != nil {
-			log.Printf("[ERR] Sending UDP reply: %v", err)
-		} else {
-			log.Printf("[SEND] UDP %d → %s (%d bytes)", port, addrVal.(net.Addr).String(), len(data))
+				if ptype != TypeResponse {
+					log.Printf("[WARN] Unexpected inner frame: %d", ptype)
+					continue
+				}
+
+				addrVal, ok := clientAddrMap.Load(port)
+				if !ok {
+					log.Printf("[WARN] Unknown client for UDP %d", port)
+					continue
+				}
+
+				udpConn := udpConns[port]
+				if udpConn == nil {
+					log.Printf("[ERR] No UDPConn for port %d", port)
+					continue
+				}
+
+				_, err := udpConn.WriteTo(payload, addrVal.(net.Addr))
+				if err != nil {
+					log.Printf("[ERR] Send UDP %d → %s: %v", port, addrVal, err)
+				} else {
+					log.Printf("[SEND] UDP %d → %s (%d bytes)", port, addrVal, len(payload))
+				}
+			}
 		}
 	}
 }
