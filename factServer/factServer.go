@@ -9,23 +9,33 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 const (
-	tcpListenPort   = 30000       // Where we listen for factProxy TCP connections
-	targetDomain    = "127.0.0.1" // Target game server domain or IP
-	targetPortStart = 10000       // Base game server UDP port
-	proxyPortStart  = 10000       // Base proxy UDP port
-	proxyPortEnd    = 10017       // End of proxy UDP port range
+	tcpListenPort   = 30000
+	targetDomain    = "m45sci.xyz"
+	targetPortStart = 10000
+	proxyPortStart  = 20000
+	proxyPortEnd    = 20018
 	udpPortOffset   = proxyPortStart - targetPortStart
+	tickRate        = time.Second / 30
+	maxPayloadBytes = 1 << 20 // 1MB
 )
 
 type FrameType byte
 
 const (
-	TypeRequest  FrameType = 0
-	TypeResponse FrameType = 1
+	TypeRequest      FrameType = 0
+	TypeResponse     FrameType = 1
+	TypeBatchRequest FrameType = 2
+	TypeBatchReply   FrameType = 3
 )
+
+type framedMessage struct {
+	port uint16
+	data []byte
+}
 
 func compressData(data []byte) ([]byte, error) {
 	var buf bytes.Buffer
@@ -47,17 +57,17 @@ func decompressData(data []byte) ([]byte, error) {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	listenAddr := fmt.Sprintf(":%d", tcpListenPort)
-	ln, err := net.Listen("tcp", listenAddr)
+	addr := fmt.Sprintf(":%d", tcpListenPort)
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("[FATAL] Failed to listen on %s: %v", listenAddr, err)
+		log.Fatalf("[FATAL] Listen %s: %v", addr, err)
 	}
-	log.Printf("[START] factServer listening on TCP %s", listenAddr)
+	log.Printf("[START] factServer listening on %s", addr)
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("[ERR] Accept failed: %v", err)
+			log.Printf("[ERR] Accept: %v", err)
 			continue
 		}
 		log.Printf("[CONNECT] From proxy %s", conn.RemoteAddr())
@@ -69,104 +79,150 @@ func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	var tcpWriteMu sync.Mutex
+	var responseQueue []framedMessage
+	var respMu sync.Mutex
+
 	udpConns := make(map[uint16]*net.UDPConn)
 
-	header := make([]byte, 7)
+	// Response batch writer
+	go func() {
+		ticker := time.NewTicker(tickRate)
+		defer ticker.Stop()
+		for range ticker.C {
+			respMu.Lock()
+			if len(responseQueue) == 0 {
+				respMu.Unlock()
+				continue
+			}
+
+			var batch bytes.Buffer
+			for _, msg := range responseQueue {
+				batch.WriteByte(byte(TypeResponse))
+				binary.Write(&batch, binary.BigEndian, msg.port)
+				binary.Write(&batch, binary.BigEndian, uint32(len(msg.data)))
+				batch.Write(msg.data)
+			}
+			responseQueue = responseQueue[:0]
+			respMu.Unlock()
+
+			compressed, err := compressData(batch.Bytes())
+			if err != nil {
+				log.Printf("[ERR] Compress response batch: %v", err)
+				continue
+			}
+
+			frame := new(bytes.Buffer)
+			frame.WriteByte(byte(TypeBatchReply))
+			binary.Write(frame, binary.BigEndian, uint32(len(compressed)))
+			frame.Write(compressed)
+
+			tcpWriteMu.Lock()
+			_, err = conn.Write(frame.Bytes())
+			tcpWriteMu.Unlock()
+			if err != nil {
+				log.Printf("[ERR] TCP write response batch: %v", err)
+				return
+			}
+			log.Printf("[SEND] Batch reply (%d bytes compressed)", len(compressed))
+		}
+	}()
+
+	// TCP reader loop
 	for {
-		_, err := io.ReadFull(conn, header)
-		if err != nil {
+		header := make([]byte, 5)
+		if _, err := io.ReadFull(conn, header); err != nil {
 			log.Printf("[DISCONNECT] %s (%v)", conn.RemoteAddr(), err)
 			break
 		}
-
 		frameType := FrameType(header[0])
-		port := binary.BigEndian.Uint16(header[1:3])
-		length := binary.BigEndian.Uint32(header[3:7])
-
-		if frameType != TypeRequest {
-			log.Printf("[WARN] Unknown frame type %d", frameType)
-			io.CopyN(io.Discard, conn, int64(length))
-			continue
-		}
-
-		if port < proxyPortStart || port > proxyPortEnd {
-			log.Printf("[ERR] Port %d outside proxy range (%d–%d)", port, proxyPortStart, proxyPortEnd)
-			io.CopyN(io.Discard, conn, int64(length))
-			continue
-		}
-
-		payload := make([]byte, length)
-		if _, err := io.ReadFull(conn, payload); err != nil {
-			log.Printf("[ERR] Read payload: %v", err)
+		length := binary.BigEndian.Uint32(header[1:5])
+		body := make([]byte, length)
+		if _, err := io.ReadFull(conn, body); err != nil {
+			log.Printf("[ERR] Read TCP body: %v", err)
 			break
 		}
 
-		data, err := decompressData(payload)
-		if err != nil {
-			log.Printf("[ERR] Decompression on port %d: %v", port, err)
+		if frameType != TypeBatchRequest {
+			log.Printf("[WARN] Unexpected frame type: %d", frameType)
 			continue
 		}
 
-		mappedPort := port - udpPortOffset
-		targetAddr := fmt.Sprintf("%s:%d", targetDomain, mappedPort)
+		unzipped, err := decompressData(body)
+		if err != nil {
+			log.Printf("[ERR] Decompress batch: %v", err)
+			continue
+		}
 
-		udpConn, ok := udpConns[port]
-		if !ok {
-			raddr, err := net.ResolveUDPAddr("udp", targetAddr)
-			if err != nil {
-				log.Printf("[ERR] Resolve %s: %v", targetAddr, err)
+		buf := bytes.NewBuffer(unzipped)
+		for buf.Len() >= 7 {
+			hdr := buf.Next(7)
+			ptype := FrameType(hdr[0])
+			port := binary.BigEndian.Uint16(hdr[1:3])
+			size := binary.BigEndian.Uint32(hdr[3:7])
+			if buf.Len() < int(size) {
+				log.Printf("[WARN] Incomplete frame in batch")
+				break
+			}
+			payload := buf.Next(int(size))
+
+			if ptype != TypeRequest {
+				log.Printf("[WARN] Unexpected inner frame type: %d", ptype)
 				continue
 			}
-			udpConn, err = net.DialUDP("udp", nil, raddr)
-			if err != nil {
-				log.Printf("[ERR] DialUDP %s: %v", targetAddr, err)
+			if port < proxyPortStart || port > proxyPortEnd {
+				log.Printf("[ERR] Port %d out of proxy range", port)
 				continue
 			}
-			udpConns[port] = udpConn
 
-			go func(p uint16, uconn *net.UDPConn) {
-				buf := make([]byte, 65535)
-				for {
-					n, _, err := uconn.ReadFromUDP(buf)
-					if err != nil {
-						log.Printf("[ERR] UDP recv on port %d: %v", p, err)
-						return
-					}
-					resp := buf[:n]
-					comp, err := compressData(resp)
-					if err != nil {
-						log.Printf("[ERR] Compression resp port %d: %v", p, err)
-						continue
-					}
+			mappedPort := port - udpPortOffset
+			target := fmt.Sprintf("%s:%d", targetDomain, mappedPort)
 
-					frame := new(bytes.Buffer)
-					frame.WriteByte(byte(TypeResponse))
-					binary.Write(frame, binary.BigEndian, p)
-					binary.Write(frame, binary.BigEndian, uint32(len(comp)))
-					frame.Write(comp)
-
-					tcpWriteMu.Lock()
-					_, err = conn.Write(frame.Bytes())
-					tcpWriteMu.Unlock()
-					if err != nil {
-						log.Printf("[ERR] TCP send resp port %d: %v", p, err)
-						return
-					}
-					log.Printf("[REPLY] ← m45sci.xyz:%d → proxy (%d bytes)", mappedPort, len(resp))
+			udpConn, ok := udpConns[port]
+			if !ok {
+				raddr, err := net.ResolveUDPAddr("udp", target)
+				if err != nil {
+					log.Printf("[ERR] Resolve %s: %v", target, err)
+					continue
 				}
-			}(port, udpConn)
-		}
+				udpConn, err = net.DialUDP("udp", nil, raddr)
+				if err != nil {
+					log.Printf("[ERR] DialUDP %s: %v", target, err)
+					continue
+				}
+				udpConns[port] = udpConn
 
-		_, err = udpConn.Write(data)
-		if err != nil {
-			log.Printf("[ERR] UDP send port %d: %v", port, err)
-			continue
+				go func(p uint16, uconn *net.UDPConn) {
+					buf := make([]byte, 65535)
+					for {
+						n, _, err := uconn.ReadFromUDP(buf)
+						if err != nil {
+							log.Printf("[ERR] UDP recv port %d: %v", p, err)
+							return
+						}
+						resp := buf[:n]
+
+						respMu.Lock()
+						responseQueue = append(responseQueue, framedMessage{
+							port: p,
+							data: append([]byte{}, resp...),
+						})
+						respMu.Unlock()
+						log.Printf("[RECV] m45sci.xyz:%d → UDP %d (%d bytes)", p-udpPortOffset, p, n)
+					}
+				}(port, udpConn)
+			}
+
+			_, err = udpConn.Write(payload)
+			if err != nil {
+				log.Printf("[ERR] UDP send %d → %s: %v", port, target, err)
+				continue
+			}
+			log.Printf("[FORWARD] TCP → m45sci.xyz:%d (%d bytes)", mappedPort, len(payload))
 		}
-		log.Printf("[FORWARD] UDP %d → %s (%d bytes)", port, targetAddr, len(data))
 	}
 
 	for _, c := range udpConns {
 		c.Close()
 	}
-	log.Printf("[CLOSE] Cleaned up UDP sockets for %s", conn.RemoteAddr())
+	log.Printf("[CLEANUP] Closed UDP conns for %s", conn.RemoteAddr())
 }
