@@ -1,4 +1,4 @@
-// factProxy.go
+// factProxy.go (with persistent TCP connection per port)
 package main
 
 import (
@@ -7,22 +7,26 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"sync"
 )
 
 const (
 	startPort  = 20000
 	endPort    = 20018
 	serverHost = "127.0.0.1"
-	serverPort = 20000
-	serverAddr = serverHost + ":20000"
+	serverPort = 30000
 	protoUDP   = 0x01
 )
 
-var verbose = true
+var (
+	verbose    = true
+	serverAddr = serverHost + ":" + fmt.Sprint(serverPort)
+)
 
 func compress(data []byte) ([]byte, error) {
 	buf := new(bytes.Buffer)
@@ -53,82 +57,75 @@ func decompress(data []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func forwardToServer(port int, data []byte, addr string, listener *net.UDPConn) {
-	if verbose {
-		log.Printf("[HEX IN] UDP %d ← %s:\n%s", port, addr, hex.Dump(data))
-	}
-
-	compressed, err := compress(data)
-	if err != nil {
-		log.Printf("[ERR] Compression failed (%d): %v", port, err)
-		return
-	}
-
-	packet := new(bytes.Buffer)
-	packet.WriteByte(protoUDP)
-	binary.Write(packet, binary.BigEndian, uint16(port-10000))
-	packet.Write(compressed)
-
-	conn, err := net.Dial("tcp", serverAddr)
-	if err != nil {
-		log.Printf("[ERR] Failed to connect to server: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	log.Printf("[OUTGOING] → %s (UDP %d) (%d → %d bytes)", serverAddr, port, len(data), len(compressed))
-	conn.Write(packet.Bytes())
-
-	// Read response
-	reply := make([]byte, 65536)
-	n, err := conn.Read(reply)
-	if err != nil {
-		log.Printf("[ERR] Failed to read reply: %v", err)
-		return
-	}
-	if n < 3 {
-		log.Printf("[WARN] Short reply")
-		return
-	}
-
-	respPort := int(binary.BigEndian.Uint16(reply[1:3])) + 10000 // add offset back
-	respCompressed := reply[3:n]
-	respData, err := decompress(respCompressed)
-	if err != nil {
-		log.Printf("[ERR] Failed to decompress reply: %v", err)
-		return
-	}
-
-	log.Printf("[REPLY] ← %s (UDP %d) (%d → %d bytes)", serverAddr, respPort, len(respCompressed), len(respData))
-
-	// Send response using the original listening socket
-	udpAddr, _ := net.ResolveUDPAddr("udp", addr)
-	_, err = listener.WriteToUDP(respData, udpAddr)
-	if err != nil {
-		log.Printf("[ERR] UDP write to %s failed: %v", addr, err)
-	} else {
-		log.Printf("[SEND] UDP %d → %s (%d bytes)", port, addr, len(respData))
-	}
-}
-
-func handleUDP(port int) {
+func startProxy(port int) {
 	addr := net.UDPAddr{Port: port}
-	conn, err := net.ListenUDP("udp", &addr)
+	udpConn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
 		log.Fatalf("[FATAL] Failed to bind UDP port %d: %v", port, err)
 	}
 	log.Printf("[LISTEN] UDP %d", port)
-	defer conn.Close()
+	defer udpConn.Close()
+
+	tcpConn, err := net.Dial("tcp", serverAddr)
+	if err != nil {
+		log.Fatalf("[FATAL] TCP dial to %s failed: %v", serverAddr, err)
+	}
+	log.Printf("[CONNECT] TCP to %s for port %d", serverAddr, port)
+	defer tcpConn.Close()
+
+	// Response reader goroutine
+	go func() {
+		replyBuf := make([]byte, 65536)
+		for {
+			n, err := tcpConn.Read(replyBuf)
+			if err != nil {
+				log.Printf("[ERR] TCP read failed for port %d: %v", port, err)
+				return
+			}
+			if n < 3 {
+				continue
+			}
+			respCompressed := replyBuf[3:n]
+			respData, err := decompress(respCompressed)
+			if err != nil {
+				log.Printf("[ERR] Decompress reply on port %d: %v", port, err)
+				continue
+			}
+			udpAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}
+			udpConn.WriteToUDP(respData, udpAddr)
+			log.Printf("[REPLY] TCP → UDP %d (%d bytes)", port, len(respData))
+		}
+	}()
 
 	buf := make([]byte, 4096)
 	for {
-		n, clientAddr, err := conn.ReadFromUDP(buf)
+		n, clientAddr, err := udpConn.ReadFromUDP(buf)
 		if err != nil {
-			log.Printf("[ERR] UDP read: %v", err)
+			log.Printf("[ERR] UDP read on port %d: %v", port, err)
 			continue
 		}
 		log.Printf("[RECV] UDP %d ← %s (%d bytes)", port, clientAddr.String(), n)
-		go forwardToServer(port, buf[:n], clientAddr.String(), conn)
+		if verbose {
+			log.Printf("[HEX IN] UDP %d ← %s:\n%s", port, clientAddr.String(), hex.Dump(buf[:n]))
+		}
+
+		compressed, err := compress(buf[:n])
+		if err != nil {
+			log.Printf("[ERR] Compression failed on port %d: %v", port, err)
+			continue
+		}
+
+		packet := new(bytes.Buffer)
+		packet.WriteByte(protoUDP)
+		binary.Write(packet, binary.BigEndian, uint16(port-10000))
+		packet.Write(compressed)
+
+		_, err = tcpConn.Write(packet.Bytes())
+		if err != nil {
+			log.Printf("[ERR] TCP write failed for port %d: %v", port, err)
+			return
+		}
+		log.Printf("[FORWARD] UDP %d → TCP (%d → %d bytes)", port, n, len(compressed))
 	}
 }
 
@@ -138,9 +135,13 @@ func main() {
 	log.SetOutput(os.Stdout)
 	log.Printf("[START] factProxy targeting %s", serverAddr)
 
+	var wg sync.WaitGroup
 	for port := startPort; port <= endPort; port++ {
-		go handleUDP(port)
+		wg.Add(1)
+		go func(p int) {
+			defer wg.Done()
+			startProxy(p)
+		}(port)
 	}
-
-	select {} // block forever
+	wg.Wait()
 }
