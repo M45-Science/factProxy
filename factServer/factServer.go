@@ -17,10 +17,9 @@ const (
 	targetDomain    = "m45sci.xyz"
 	targetPortStart = 10000
 	proxyPortStart  = 20000
-	proxyPortEnd    = 20018
+	proxyPortEnd    = 20017
 	udpPortOffset   = proxyPortStart - targetPortStart
 	tickRate        = time.Second / 30
-	maxPayloadBytes = 1 << 20 // 1MB
 )
 
 type FrameType byte
