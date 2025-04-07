@@ -14,12 +14,12 @@ import (
 
 const (
 	tcpListenPort   = 30000
-	targetDomain    = "m45sci.xyz"
+	targetDomain    = "127.0.0.1"
 	targetPortStart = 10000
 	proxyPortStart  = 20000
 	proxyPortEnd    = 20017
 	udpPortOffset   = proxyPortStart - targetPortStart
-	tickRate        = time.Second / 30
+	tickRate        = time.Second / 60
 )
 
 type FrameType byte

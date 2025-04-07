@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	serverAddress = "127.0.0.1:30000"
+	serverAddress = "m45sci.xyz:30000"
 	udpPortStart  = 20000
 	udpPortEnd    = 20017
-	tickRate      = time.Second / 30 // 1/30th second flush
+	tickRate      = time.Second / 60 // 1/30th second flush
 )
 
 type FrameType byte
