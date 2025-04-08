@@ -1,0 +1,70 @@
+name: Build and Release factProxy
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers only on tag pushes like v1.0.0
+
+jobs:
+  build:
+    name: Build for ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'  # or your preferred Go version
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p build
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          go build -o build/factProxy${EXT} ./factProxy
+
+      - name: Prepare release zip
+        run: |
+          NAME="factProxy-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p dist/$NAME
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          cp build/factProxy${EXT} dist/$NAME/
+          cp factProxy/README.txt dist/$NAME/
+          cp factProxy/connect-links.html dist/$NAME/
+          cd dist
+          zip -r $NAME.zip $NAME
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: factProxy-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/factProxy-${{ matrix.goos }}-${{ matrix.goarch }}.zip
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
