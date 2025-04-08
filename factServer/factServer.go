@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -12,19 +13,18 @@ import (
 	"time"
 )
 
-const (
-	tcpListenPort   = 30000
-	targetDomain    = "127.0.0.1"
-	targetPortStart = 10000
-	proxyPortStart  = 20000
-	proxyPortEnd    = 20017
-	udpPortOffset   = proxyPortStart - targetPortStart
-	tickRate        = time.Second / 60
+var (
+	listenPort, startPort, endPort *int
+	tickRate                       time.Duration
+	destination                    *string
+	verbose                        *bool
 )
 
 type FrameType byte
 
 const (
+	VERSION = 1
+
 	TypeRequest      FrameType = 0
 	TypeResponse     FrameType = 1
 	TypeBatchRequest FrameType = 2
@@ -38,7 +38,7 @@ type framedMessage struct {
 
 func compressData(data []byte) ([]byte, error) {
 	var buf bytes.Buffer
-	w := zlib.NewWriter(&buf)
+	w, _ := zlib.NewWriterLevel(&buf, zlib.BestSpeed)
 	_, err := w.Write(data)
 	w.Close()
 	return buf.Bytes(), err
@@ -54,9 +54,18 @@ func decompressData(data []byte) ([]byte, error) {
 }
 
 func main() {
+	startPort = flag.Int("startPort", 10000, "starting destination port (range))")
+	endPort = flag.Int("endPort", 10017, "ending destination port (range)")
+	listenPort = flag.Int("listenPort", 30000, "listen port")
+	tRate := flag.Int("tickRate", 60, "batches of packets per second")
+	destination = flag.String("destination", "127.0.0.1", "ip address of the factorio server")
+	verbose = flag.Bool("verbose", false, "verbose logging")
+	flag.Parse()
+
+	tickRate = time.Second / time.Duration(*tRate)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	addr := fmt.Sprintf(":%d", tcpListenPort)
+	addr := fmt.Sprintf(":%d", *listenPort)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("[FATAL] Listen %s: %v", addr, err)
@@ -122,7 +131,9 @@ func handleConnection(conn net.Conn) {
 				log.Printf("[ERR] TCP write response batch: %v", err)
 				return
 			}
-			log.Printf("[SEND] Batch reply (%d bytes compressed)", len(compressed))
+			if *verbose {
+				log.Printf("[SEND] Batch reply (%d bytes compressed)", len(compressed))
+			}
 		}
 	}()
 
@@ -168,13 +179,12 @@ func handleConnection(conn net.Conn) {
 				log.Printf("[WARN] Unexpected inner frame type: %d", ptype)
 				continue
 			}
-			if port < proxyPortStart || port > proxyPortEnd {
+			if port < uint16(*startPort) || port > uint16(*endPort) {
 				log.Printf("[ERR] Port %d out of proxy range", port)
 				continue
 			}
 
-			mappedPort := port - udpPortOffset
-			target := fmt.Sprintf("%s:%d", targetDomain, mappedPort)
+			target := fmt.Sprintf("%s:%d", *destination, port)
 
 			udpConn, ok := udpConns[port]
 			if !ok {
@@ -206,7 +216,9 @@ func handleConnection(conn net.Conn) {
 							data: append([]byte{}, resp...),
 						})
 						respMu.Unlock()
-						log.Printf("[RECV] m45sci.xyz:%d → UDP %d (%d bytes)", p-udpPortOffset, p, n)
+						if *verbose {
+							log.Printf("[RECV] m45sci.xyz:%d → UDP %d (%d bytes)", p, p, n)
+						}
 					}
 				}(port, udpConn)
 			}
@@ -216,7 +228,9 @@ func handleConnection(conn net.Conn) {
 				log.Printf("[ERR] UDP send %d → %s: %v", port, target, err)
 				continue
 			}
-			log.Printf("[FORWARD] TCP → m45sci.xyz:%d (%d bytes)", mappedPort, len(payload))
+			if *verbose {
+				log.Printf("[FORWARD] TCP → m45sci.xyz:%d (%d bytes)", port, len(payload))
+			}
 		}
 	}
 

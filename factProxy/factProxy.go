@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/binary"
+	"flag"
 	"io"
 	"log"
 	"net"
@@ -13,15 +14,17 @@ import (
 )
 
 const (
-	serverAddress = "m45sci.xyz:30000"
 	udpPortStart  = 20000
 	udpPortEnd    = 20017
+	udpPortOffset = 10000
 	tickRate      = time.Second / 60 // 1/30th second flush
 )
 
 type FrameType byte
 
 const (
+	VERSION = 1
+
 	TypeRequest      FrameType = 0
 	TypeResponse     FrameType = 1
 	TypeBatchRequest FrameType = 2
@@ -38,6 +41,7 @@ var (
 	clientAddrMap sync.Map
 	outgoingQueue = make([]framedMessage, 0)
 	outMu         sync.Mutex
+	serverAddress *string
 )
 
 func compressData(data []byte) ([]byte, error) {
@@ -58,6 +62,8 @@ func decompressData(data []byte) ([]byte, error) {
 }
 
 func main() {
+	serverAddress = flag.String("server", "m45sci.xyz:30000", "")
+	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	for port := udpPortStart; port <= udpPortEnd; port++ {
@@ -71,14 +77,14 @@ func main() {
 	}
 
 	for {
-		log.Printf("[CONNECTING] TCP → %s", serverAddress)
-		conn, err := net.Dial("tcp", serverAddress)
+		log.Printf("[CONNECTING] TCP → %s", *serverAddress)
+		conn, err := net.Dial("tcp", *serverAddress)
 		if err != nil {
 			log.Printf("[RETRY] TCP connect failed: %v", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
-		log.Printf("[CONNECTED] TCP to %s", serverAddress)
+		log.Printf("[CONNECTED] TCP to %s", *serverAddress)
 		runProxy(conn)
 		log.Printf("[DISCONNECTED] TCP lost, reconnecting...")
 		time.Sleep(2 * time.Second)
@@ -126,7 +132,7 @@ func handleUDP(ctx context.Context, port uint16, udpConn *net.UDPConn, cancel co
 		case <-ctx.Done():
 			return
 		default:
-			udpConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			udpConn.SetReadDeadline(time.Now().Add(tickRate))
 			n, clientAddr, err := udpConn.ReadFrom(buf)
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
