@@ -21,7 +21,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'  # or your preferred Go version
+          go-version: '1.24'  # or your preferred Go version
 
       - name: Build binary
         env:
