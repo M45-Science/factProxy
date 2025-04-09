@@ -1,11 +1,10 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -43,6 +42,7 @@ var (
 
 type connData struct {
 	ID         int
+	Reader     *bufio.Reader
 	Conn       net.Conn
 	Born       time.Time
 	LastActive time.Time
@@ -50,10 +50,17 @@ type connData struct {
 	SendBytes  int
 }
 
+type frameData struct {
+	frameType int
+	length    int
+	data      []byte
+}
+
 const (
 	FRAME_HELLO = iota
 	FRAME_RESPONSE
 	FRAME_REPLY
+	FRAME_GOODBYE
 )
 
 func main() {
@@ -99,61 +106,86 @@ func main() {
 
 	<-sigs
 	// TO DO: Handle shutdown here
-	log.Println("[QUIT] Server shutting down.")
+	log.Printf("[QUIT] Server shutting down: %v", sigs)
 }
 
-func handleConnection(conn net.Conn) {
+func handleConnection(c net.Conn) {
 	//Limit max connections
 	if numConn > numClients {
-		conn.Close()
+		c.Close()
 	}
 
-	cond := startConn(conn)
-	if cond == nil {
+	con := startConn(c)
+	if con == nil {
 		return
 	}
-	defer closeConn(cond)
+	defer con.Close()
 
-	var helloBuf []byte
-	reader := bytes.NewReader(helloBuf)
+	frameData, err := con.ReadFrame()
+	if frameData == nil || err != nil {
+		return
+	}
 
-	var Version int
-	err := binary.Read(reader, binary.LittleEndian, Version)
+	if frameData.frameType == FRAME_HELLO {
+		if frameData.length > 0 {
+
+		}
+	}
+}
+
+func (con connData) WriteFrame(frameType int, buf []byte) error {
+	var header []byte
+	binary.AppendUvarint(header, uint64(frameType))
+
+	switch frameType {
+	case FRAME_HELLO:
+		binary.AppendUvarint(header, PROTO_VERSION)
+		con.Write(header)
+	case FRAME_RESPONSE:
+		//
+	case FRAME_REPLY:
+		//
+	case FRAME_GOODBYE:
+		binary.AppendUvarint(header, 0)
+		con.Write(header)
+		con.Close()
+	default:
+		return fmt.Errorf("invalid frame type: %v", frameType)
+	}
+
+	return nil
+}
+
+func (con connData) ReadFrame() (*frameData, error) {
+	frameType, err := binary.ReadUvarint(con.Reader)
 	if err != nil {
-		log.Printf("Unable to read header field: Version: %v", err)
-		return
+		return nil, fmt.Errorf("ReadFrame: unable to read frameType: %v", err)
 	}
 
-	for {
-		var err error
-		var headerBuf []byte
-		if _, err := io.ReadFull(conn, headerBuf); err != nil {
-			log.Printf("[DISCONNECT] %s (%v)", conn.RemoteAddr(), err)
-			break
-		}
-		reader := bytes.NewReader(headerBuf)
+	frameLength, err := binary.ReadUvarint(con.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("ReadFrame: unable to read frame length: %v", err)
+	}
 
-		var Length uint64
-		Length, err = binary.ReadUvarint(reader)
-		if err != nil {
-			log.Printf("Unable to read header field: Length: %v", err)
-			break
-		}
-		var FrameType uint64
-		FrameType, err = binary.ReadUvarint(reader)
-		if err != nil {
-			log.Printf("Unable to read header field: FrameType: %v", err)
-			break
-		}
-
-		if Length != 0 && FrameType != 0 {
-			//Placeholder
+	if frameType == FRAME_GOODBYE {
+		if frameLength == 0 {
+			log.Printf("Client: %v goodbye.", con.ID)
+			con.Close()
+			return nil, nil
 		}
 	}
+
+	var payload = make([]byte, frameLength)
+	len, err := con.Conn.Read(payload)
+	if len != int(frameLength) {
+		return nil, fmt.Errorf("ReadFrame: unable to read frame data: %v", err)
+	}
+
+	return &frameData{frameType: int(frameType), length: int(frameLength), data: payload}, nil
 }
 
 // Close connection, remove from list, decrement connection count
-func closeConn(cond *connData) {
+func (cond *connData) Close() {
 	if cond == nil {
 		return
 	}
@@ -164,14 +196,25 @@ func closeConn(cond *connData) {
 }
 
 // Add connection to list, increment count
-func startConn(conn net.Conn) *connData {
+func startConn(c net.Conn) *connData {
 	connTop++
 
 	if connList[connTop] == nil {
 		numClients++
-		newConn := &connData{ID: connTop, Conn: conn, Born: time.Now()}
+		reader := bufio.NewReader(c)
+		newConn := &connData{ID: connTop, Reader: reader, Conn: c, Born: time.Now()}
 		connList[connTop] = newConn
 		return newConn
+	}
+
+	return nil
+}
+
+func (con connData) Write(buf []byte) error {
+	bufLen := len(buf)
+	l, err := con.Conn.Write(buf)
+	if bufLen != l || err != nil {
+		return err
 	}
 
 	return nil
