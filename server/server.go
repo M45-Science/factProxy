@@ -8,7 +8,10 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -54,6 +57,11 @@ const (
 )
 
 func main() {
+	// Channel to receive OS signals
+	sigs := make(chan os.Signal, 1)
+	// Notify for SIGINT (Ctrl+C) and SIGTERM
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
 	flag.IntVar(&listenPort, "listenPort", defaultListenPort, "TCP Port to listen for proxy clients on.")
 	flag.IntVar(&maxClients, "maxClients", defaultMaxClients, "Maximum proxy clients.")
 	flag.IntVar(&maxGameClients, "maxGameClients", defaultMaxGameClients, "Maximum game clients.")
@@ -71,21 +79,27 @@ func main() {
 	}
 	log.Printf("[START] Server listening on %v.", listenPort)
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("[ERR] Accept: %v", err)
-			continue
-		}
-		if numClients > maxClients {
-			conn.Close()
-			continue
-		}
-		log.Printf("[CONNECT] From proxy: %s", conn.RemoteAddr())
-		go handleConnection(conn)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				log.Printf("[ERR] Accept: %v", err)
+				continue
+			}
+			if numClients > maxClients {
+				conn.Close()
+				continue
+			}
+			log.Printf("[CONNECT] From proxy: %s", conn.RemoteAddr())
+			go handleConnection(conn)
 
-		time.Sleep(listenThrottle)
-	}
+			time.Sleep(listenThrottle)
+		}
+	}()
+
+	<-sigs
+	// TO DO: Handle shutdown here
+	log.Println("[QUIT] Server shutting down.")
 }
 
 func handleConnection(conn net.Conn) {
@@ -138,6 +152,7 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
+// Close connection, remove from list, decrement connection count
 func closeConn(cond *connData) {
 	if cond == nil {
 		return
@@ -148,6 +163,7 @@ func closeConn(cond *connData) {
 	}
 }
 
+// Add connection to list, increment count
 func startConn(conn net.Conn) *connData {
 	connTop++
 
