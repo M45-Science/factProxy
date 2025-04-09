@@ -13,10 +13,11 @@ import (
 )
 
 const (
+	PROTO_VERSION     = 1
 	defaultListenPort = 30000
 
 	defaultMaxClients     = 100
-	defaultMaxGameClients = 1000
+	defaultMaxGameClients = 100
 
 	defaultListenMS    = 1000
 	defaultCompression = true
@@ -38,11 +39,12 @@ var (
 )
 
 type connData struct {
-	ID        int
-	Conn      net.Conn
-	Born      time.Time
-	RecvBytes int
-	SendBytes int
+	ID         int
+	Conn       net.Conn
+	Born       time.Time
+	LastActive time.Time
+	RecvBytes  int
+	SendBytes  int
 }
 
 const (
@@ -87,6 +89,11 @@ func main() {
 }
 
 func handleConnection(conn net.Conn) {
+	//Limit max connections
+	if numConn > numClients {
+		conn.Close()
+	}
+
 	cond := startConn(conn)
 	if cond == nil {
 		return
@@ -104,6 +111,7 @@ func handleConnection(conn net.Conn) {
 	}
 
 	for {
+		var err error
 		var headerBuf []byte
 		if _, err := io.ReadFull(conn, headerBuf); err != nil {
 			log.Printf("[DISCONNECT] %s (%v)", conn.RemoteAddr(), err)
@@ -111,17 +119,21 @@ func handleConnection(conn net.Conn) {
 		}
 		reader := bytes.NewReader(headerBuf)
 
-		var Length int
-		err := binary.Read(reader, binary.LittleEndian, Length)
+		var Length uint64
+		Length, err = binary.ReadUvarint(reader)
 		if err != nil {
 			log.Printf("Unable to read header field: Length: %v", err)
 			break
 		}
-		var FrameType int
-		err = binary.Read(reader, binary.LittleEndian, FrameType)
+		var FrameType uint64
+		FrameType, err = binary.ReadUvarint(reader)
 		if err != nil {
 			log.Printf("Unable to read header field: FrameType: %v", err)
 			break
+		}
+
+		if Length != 0 && FrameType != 0 {
+			//Placeholder
 		}
 	}
 }
