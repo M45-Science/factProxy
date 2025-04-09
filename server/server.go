@@ -10,59 +10,40 @@ import (
 	"net"
 	"sync"
 	"time"
-
-	"github.com/pierrec/lz4"
 )
 
 const (
-	defaultMaxClients = 50
 	defaultListenPort = 30000
-	defaultListenMS   = 100
+
+	defaultMaxClients     = 100
+	defaultMaxGameClients = 1000
+
+	defaultListenMS    = 1000
+	defaultCompression = true
 )
 
 var (
-	listenPort, maxClients int
-	numClients             int
-	listenThrottle         = time.Second
-	listenThrottleMS       int
+	listenPort, maxClients, maxGameClients int
+	numClients                             int
+	listenThrottle                         = time.Second
+	listenThrottleMS                       int
+	useCompression                         bool
 )
 
 var (
 	connLock sync.Mutex
 	numConn  int
-	connTop  uint64
-	connList map[uint64]*connData
+	connTop  int
+	connList map[int]*connData
 )
 
 type connData struct {
-	ID        uint64
+	ID        int
 	Conn      net.Conn
 	Born      time.Time
-	RecvBytes uint64
-	SendBytes uint64
+	RecvBytes int
+	SendBytes int
 }
-
-const headerSize = 24 / 8
-
-type HeaderData struct {
-	Length    uint16
-	FrameType uint8
-}
-
-const helloSize = 16 / 8
-
-type ConnHello struct {
-	Version     uint8
-	Compression uint8
-}
-
-const (
-	COMPRESS_NONE = iota
-	COMPRESS_LZ4
-	COMPRESS_ZSTD
-	COMPRESS_GZIP
-	COMPRESS_ZIP
-)
 
 const (
 	FRAME_HELLO = iota
@@ -71,13 +52,15 @@ const (
 )
 
 func main() {
-	flag.IntVar(&listenPort, "listenPort", defaultListenPort, "TCP Port to listen for proxy clients on")
-	flag.IntVar(&maxClients, "maxClients", defaultMaxClients, "Maximum proxy clients")
+	flag.IntVar(&listenPort, "listenPort", defaultListenPort, "TCP Port to listen for proxy clients on.")
+	flag.IntVar(&maxClients, "maxClients", defaultMaxClients, "Maximum proxy clients.")
+	flag.IntVar(&maxGameClients, "maxGameClients", defaultMaxGameClients, "Maximum game clients.")
 	flag.IntVar(&listenThrottleMS, "listenThrottle", defaultListenMS, "Only answer check for new connections every X milliseconds.")
+	flag.BoolVar(&useCompression, "useCompression", defaultCompression, "")
 	flag.Parse()
 
 	//Convert flag int to duration
-	listenThrottle = time.Millisecond * time.Duration(listenPort)
+	listenThrottle = time.Millisecond * time.Duration(listenThrottleMS)
 
 	addr := fmt.Sprintf(":%d", listenPort)
 	listener, err := net.Listen("tcp", addr)
@@ -110,44 +93,35 @@ func handleConnection(conn net.Conn) {
 	}
 	defer closeConn(cond)
 
-	var result ConnHello
-	var helloBuf = make([]byte, helloSize)
+	var helloBuf []byte
 	reader := bytes.NewReader(helloBuf)
-	err := binary.Read(reader, binary.LittleEndian, result.Version)
-	if err != nil {
-		log.Printf("Unable to read header field: Version: %v", err)
-		return
-	}
-	err = binary.Read(reader, binary.LittleEndian, result.Compression)
+
+	var Version int
+	err := binary.Read(reader, binary.LittleEndian, Version)
 	if err != nil {
 		log.Printf("Unable to read header field: Version: %v", err)
 		return
 	}
 
 	for {
-		var headerBuf = make([]byte, headerSize)
+		var headerBuf []byte
 		if _, err := io.ReadFull(conn, headerBuf); err != nil {
 			log.Printf("[DISCONNECT] %s (%v)", conn.RemoteAddr(), err)
 			break
 		}
-
-		var result HeaderData
 		reader := bytes.NewReader(headerBuf)
-		err := binary.Read(reader, binary.LittleEndian, result.Length)
+
+		var Length int
+		err := binary.Read(reader, binary.LittleEndian, Length)
 		if err != nil {
 			log.Printf("Unable to read header field: Length: %v", err)
 			break
 		}
-		err = binary.Read(reader, binary.LittleEndian, result.FrameType)
+		var FrameType int
+		err = binary.Read(reader, binary.LittleEndian, FrameType)
 		if err != nil {
 			log.Printf("Unable to read header field: FrameType: %v", err)
 			break
-		}
-
-		// Ready Body
-		zr := lz4.NewReader(headerBuf)
-		if zr != nil {
-			//
 		}
 	}
 }
