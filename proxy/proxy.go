@@ -1,0 +1,55 @@
+package main
+
+import (
+	"encoding/binary"
+	"flag"
+	"log"
+	"math/rand/v2"
+	"net"
+	"time"
+)
+
+var (
+	serverAddr     string
+	useCompression bool
+
+	RecvBytes, SendBytes int
+)
+
+const (
+	FRAME_HELLO = iota
+	FRAME_RESPONSE
+	FRAME_REPLY
+)
+
+const (
+	PROTO_VERSION = 1
+	ReconDelaySec = 1
+	ReconFuzzMS   = 4 * 1000
+	maxAttempts   = 25
+)
+
+func main() {
+	flag.StringVar(&serverAddr, "server", "m45sci.xyz:30000", "server:port")
+	flag.Parse()
+
+	for x := 0; x < maxAttempts; x++ {
+		if x != 0 {
+			time.Sleep(time.Duration(ReconDelaySec) * time.Second)
+			time.Sleep(time.Duration(rand.IntN(ReconFuzzMS)) * time.Millisecond)
+		}
+
+		conn, err := net.Dial("tcp", serverAddr)
+		if err != nil {
+			log.Printf("Dial: Unable to connect to %v: %v", serverAddr, err)
+			continue
+		}
+
+		var buf []byte
+		binary.PutUvarint(buf, PROTO_VERSION)
+		conn.Write(buf)
+	}
+
+	log.Printf("Too many connection attempts (%v), stopping. Relaunch to try again.", maxAttempts)
+	time.Sleep(time.Minute)
+}
