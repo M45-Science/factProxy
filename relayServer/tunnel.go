@@ -54,21 +54,31 @@ func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 		if tunnelTop == TOP_ID {
 			tunnelTop = 0
 		}
+		tunnelTop++
 		if tunnelList[tunnelTop] == nil {
 			tunnelCount++
 			reader := bufio.NewReader(c)
 
 			//Read frame 0
+			frame, err := binary.ReadUvarint(reader)
+			if err != nil {
+				return nil, fmt.Errorf("startTunnelConn: unable to read frame type: %v", err)
+			}
+			if frame != 0 {
+				return nil, nil
+			}
+
+			//Protocol version
 			proto, err := binary.ReadUvarint(reader)
 			if err != nil {
 				return nil, fmt.Errorf("startTunnelConn: unable to read frame type: %v", err)
 			}
-
 			if proto != protocolVersion {
-				log.Printf("startTunnelConn: Protocol version not compatible: %v")
+				log.Printf("startTunnelConn: protocol version not compatible: %v", proto)
 				return nil, nil
 			}
 
+			//Server ID
 			serverID, err := binary.ReadUvarint(reader)
 			if err != nil {
 				return nil, fmt.Errorf("startTunnelConn: unable to read server id: %v", err)
@@ -77,7 +87,6 @@ func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 			newConn := &tunnelCon{ID: int(serverID), Reader: reader, Con: c}
 			//New ID
 			if serverID == 0 {
-				tunnelTop++
 				serverID = uint64(tunnelTop)
 				newConn.IDMap = map[int]*routeData{}
 				newConn.Born = time.Now()
@@ -86,14 +95,23 @@ func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 				log.Printf("[RESUME] Tunnel: %v connection resumed.", newConn.ID)
 			}
 
-			tunnelList[tunnelTop] = newConn
-			go newConn.routeMapCleaner(tunnelTop)
+			//Reply with serverID, gamePorts
+			var buf []byte
+			binary.AppendVarint(buf, 0)
+			binary.AppendVarint(buf, int64(protocolVersion))
+			binary.AppendVarint(buf, int64(serverID))
+			binary.AppendVarint(buf, int64(len(gamePorts)))
+			for _, port := range gamePorts {
+				binary.AppendVarint(buf, int64(port))
+			}
+			newConn.Write(buf)
 
+			tunnelList[tunnelTop] = newConn
+
+			go newConn.routeMapCleaner(tunnelTop)
 			return newConn, nil
 		}
 	}
-
-	return nil, nil
 }
 
 func (con *tunnelCon) Write(buf []byte) error {
@@ -125,8 +143,9 @@ func (con *tunnelCon) Close() {
 // Read and process tunnel frames
 func handleTunnelConnection(c net.Conn) {
 
-	con := startTunnelConn(c)
-	if con == nil {
+	con, err := startTunnelConn(c)
+	if err != nil || con == nil {
+		log.Printf("handleTunnelConnection: startTunnelConn: %v", err)
 		return
 	}
 	defer con.Close()

@@ -25,15 +25,6 @@ type payloadData struct {
 }
 
 func (con *tunnelCon) ReadFrames() (*frameData, error) {
-	header, err := binary.ReadUvarint(con.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("ReadFrame: unable to read frame type: %v", err)
-	}
-
-	if header != protocolVersion {
-		log.Printf("Protocol version not compatible: %v")
-		return nil, nil
-	}
 
 	for {
 		payloadLength, err := binary.ReadUvarint(con.Reader)
@@ -52,16 +43,11 @@ func (con *tunnelCon) ReadFrames() (*frameData, error) {
 			return nil, fmt.Errorf("ReadFrame: unable to read payload data: %v", err)
 		}
 
-		//Do something with the payload here
 		sendPacket(route, payloadData)
 	}
 }
 
 func sendPacket(route *routeData, payloadData []byte) error {
-	if route.tunnel != nil {
-		//
-	}
-
 	return nil
 }
 

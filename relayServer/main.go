@@ -12,6 +12,8 @@ import (
 )
 
 const (
+	SERVER_KEY            = 0xCAFE69C0FFEE
+	CLIENT_KEY            = 0xADD069C0FFEE
 	defaultTunnelPort     = 30000
 	defaultMaxTunnels     = 100
 	defaultTunnelListenMS = 100
