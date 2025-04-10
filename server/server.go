@@ -175,7 +175,7 @@ func (con connData) WriteFrame(frameType int, buf []byte) error {
 	case FRAME_HELLO:
 		binary.AppendUvarint(header, PROTO_VERSION)
 		con.Write(header)
-	case FRAME_RESPONSE:
+	case FRAME_MESSAGE:
 		//
 	case FRAME_REPLY:
 		//
