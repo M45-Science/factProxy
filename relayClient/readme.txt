@@ -1,4 +1,4 @@
-1: Launch program
+1: Launch program (M45-Relay-Client.exe)
 
 2: Option A:
 Open connect-links.html
