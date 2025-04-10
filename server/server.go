@@ -58,10 +58,18 @@ type frameData struct {
 
 const (
 	FRAME_HELLO = iota
-	FRAME_RESPONSE
+	FRAME_MESSAGE
 	FRAME_REPLY
 	FRAME_GOODBYE
 )
+
+var frameName []string = []string{
+	"HELLO",
+	"MESSAGE",
+	"REPLY",
+	"GOODBYE",
+	"UNKNOWN",
+}
 
 func main() {
 	// Channel to receive OS signals
@@ -105,15 +113,16 @@ func main() {
 	}()
 
 	<-sigs
-	// TO DO: Handle shutdown here
-	log.Printf("[QUIT] Server shutting down: %v", sigs)
+	log.Printf("[QUIT] Server shutting down: Signal: %v", sigs)
+	connLock.Lock()
+	defer connLock.Unlock()
+	for _, c := range connList {
+		c.Close()
+	}
+	log.Printf("Goodbye")
 }
 
 func handleConnection(c net.Conn) {
-	//Limit max connections
-	if numConn > numClients {
-		c.Close()
-	}
 
 	con := startConn(c)
 	if con == nil {
@@ -127,10 +136,35 @@ func handleConnection(c net.Conn) {
 	}
 
 	if frameData.frameType == FRAME_HELLO {
-		if frameData.length > 0 {
-
+		if PROTO_VERSION == frameData.length {
+			for {
+				fd, err := con.ReadFrame()
+				if err != nil {
+					return
+				}
+				err = handleFrame(*con, *fd)
+			}
+		} else {
+			log.Printf("Protocol version not compatible: ID: %v, Version: %v", con.ID, frameData.length)
 		}
+	} else {
+		log.Printf("Did not receive hello frame from ID: %v.", con.ID)
 	}
+}
+
+func handleFrame(con connData, fd frameData) error {
+	switch fd.frameType {
+	case FRAME_GOODBYE:
+		if fd.length == 0 {
+			log.Printf("[GOODBYE] FROM ID: %v", con.ID)
+			con.Close()
+		}
+	default:
+		log.Printf("handleFrame: Invalid frame type: %v from ID: %v", fd.frameType, con.ID)
+		con.Close()
+	}
+
+	return nil
 }
 
 func (con connData) WriteFrame(frameType int, buf []byte) error {
@@ -146,6 +180,7 @@ func (con connData) WriteFrame(frameType int, buf []byte) error {
 	case FRAME_REPLY:
 		//
 	case FRAME_GOODBYE:
+		log.Printf("[GOODBYE] TO ID: %v", con.ID)
 		binary.AppendUvarint(header, 0)
 		con.Write(header)
 		con.Close()
@@ -167,16 +202,9 @@ func (con connData) ReadFrame() (*frameData, error) {
 		return nil, fmt.Errorf("ReadFrame: unable to read frame length: %v", err)
 	}
 
-	if frameType == FRAME_GOODBYE {
-		if frameLength == 0 {
-			log.Printf("Client: %v goodbye.", con.ID)
-			con.Close()
-			return nil, nil
-		}
-	}
-
 	var payload = make([]byte, frameLength)
 	len, err := con.Conn.Read(payload)
+	con.RecvBytes += len
 	if len != int(frameLength) {
 		return nil, fmt.Errorf("ReadFrame: unable to read frame data: %v", err)
 	}
@@ -185,13 +213,17 @@ func (con connData) ReadFrame() (*frameData, error) {
 }
 
 // Close connection, remove from list, decrement connection count
-func (cond *connData) Close() {
-	if cond == nil {
+func (con *connData) Close() {
+	if con == nil {
 		return
 	}
-	if connList[cond.ID] != nil {
+	connLock.Lock()
+	defer connLock.Unlock()
+	if connList[con.ID] != nil {
+		con.WriteFrame(FRAME_GOODBYE, nil)
+		log.Printf("[DISCONNECT] ID: %v was disconnected.", con.ID)
 		numClients--
-		delete(connList, cond.ID)
+		delete(connList, con.ID)
 	}
 }
 
@@ -199,11 +231,15 @@ func (cond *connData) Close() {
 func startConn(c net.Conn) *connData {
 	connTop++
 
+	connLock.Lock()
+	defer connLock.Unlock()
 	if connList[connTop] == nil {
 		numClients++
 		reader := bufio.NewReader(c)
 		newConn := &connData{ID: connTop, Reader: reader, Conn: c, Born: time.Now()}
 		connList[connTop] = newConn
+
+		log.Printf("[CONNECT] ID: %v connected.", newConn.ID)
 		return newConn
 	}
 
@@ -217,5 +253,6 @@ func (con connData) Write(buf []byte) error {
 		return err
 	}
 
+	con.SendBytes += bufLen
 	return nil
 }
