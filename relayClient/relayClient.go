@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"flag"
 	"log"
-	"math/rand/v2"
 	"net"
 	"time"
 )
@@ -24,8 +23,7 @@ const (
 
 const (
 	PROTO_VERSION = 1
-	ReconDelaySec = 1
-	ReconFuzzMS   = 4 * 1000
+	ReconDelaySec = 5
 	maxAttempts   = 25
 )
 
@@ -36,7 +34,6 @@ func main() {
 	for x := 0; x < maxAttempts; x++ {
 		if x != 0 {
 			time.Sleep(time.Duration(ReconDelaySec) * time.Second)
-			time.Sleep(time.Duration(rand.IntN(ReconFuzzMS)) * time.Millisecond)
 		}
 
 		conn, err := net.Dial("tcp", serverAddr)

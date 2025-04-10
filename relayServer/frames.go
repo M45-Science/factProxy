@@ -10,47 +10,53 @@ import (
 
 const (
 	FRAME_HELLO = iota
-	FRAME_MESSAGE
-	FRAME_REPLY
+	FRAME_CLIENT
+	FRAME_SERVER
 	FRAME_GOODBYE
 )
 
 var frameName []string = []string{
 	"HELLO",
-	"MESSAGE",
-	"REPLY",
+	"CLIENT_FRAME",
+	"SERVER_FRAME",
 	"GOODBYE",
-	"UNKNOWN",
 }
 
+/*
+ *	Version 1 frame data format:
+ *	Type (variable length uint)
+ *	payloadLength (variable length uint)
+ *	payload []byte
+ */
+
 type frameData struct {
-	frameType  int
-	data       []byte
-	dataLength int
+	frameType     int
+	payload       []byte
+	payloadLength int
 }
 
 func (con tunnelCon) ReadFrame() (*frameData, error) {
 	frameType, err := binary.ReadUvarint(con.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("ReadFrame: unable to read frameType: %v", err)
+		return nil, fmt.Errorf("ReadFrame: unable to read frame type: %v", err)
 	}
 
 	frameLength, err := binary.ReadUvarint(con.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("ReadFrame: unable to read frame length: %v", err)
+		return nil, fmt.Errorf("ReadFrame: unable to read payload length: %v", err)
 	}
-
 	var payload = make([]byte, frameLength)
+
 	len, err := con.Con.Read(payload)
 	con.RecvBytes += len
 	if len != int(frameLength) {
-		return nil, fmt.Errorf("ReadFrame: unable to read frame data: %v", err)
+		return nil, fmt.Errorf("ReadFrame: unable to read payload: %v", err)
 	}
 
-	return &frameData{frameType: int(frameType), dataLength: int(frameLength), data: payload}, nil
+	return &frameData{frameType: int(frameType), payloadLength: int(frameLength), payload: payload}, nil
 }
 
-func (con tunnelCon) WriteFrame(frameType int, buf []byte) error {
+func (con tunnelCon) WriteFrame(frameType int, payload []byte) error {
 	var header []byte
 	binary.AppendUvarint(header, uint64(frameType))
 
@@ -58,10 +64,20 @@ func (con tunnelCon) WriteFrame(frameType int, buf []byte) error {
 	case FRAME_HELLO:
 		binary.AppendUvarint(header, protocolVersion)
 		con.Write(header)
-	case FRAME_MESSAGE:
-		//
-	case FRAME_REPLY:
-		//
+	case FRAME_CLIENT:
+		payloadLen := len(payload)
+		if verboseLog {
+			log.Printf("[CLIENT] ID: %v, Len: %v", con.ID, payloadLen)
+		}
+		//Write to UDP here
+	case FRAME_SERVER:
+		payloadLen := len(payload)
+		if verboseLog {
+			log.Printf("[SERVER] To ID: %v, Len: %v", con.ID, payloadLen)
+		}
+		binary.AppendUvarint(header, uint64(payloadLen))
+		con.Write(header)
+		con.Write(payload)
 	case FRAME_GOODBYE:
 		log.Printf("[GOODBYE] TO ID: %v", con.ID)
 		binary.AppendUvarint(header, 0)
@@ -77,7 +93,7 @@ func (con tunnelCon) WriteFrame(frameType int, buf []byte) error {
 func handleFrame(con tunnelCon, fd frameData) error {
 	switch fd.frameType {
 	case FRAME_GOODBYE:
-		if fd.dataLength == 0 {
+		if fd.payloadLength == 0 {
 			log.Printf("[GOODBYE] FROM ID: %v", con.ID)
 			con.Close()
 		}
@@ -93,7 +109,7 @@ func listenForTunnels() {
 	addr := fmt.Sprintf(":%d", tunnelPort)
 	tunnelListener, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("[FATAL] Tunnel unable to listen on port: %v.", tunnelPort)
+		log.Fatalf("[FATAL] Unable to listen on tunnel port: %v.", tunnelPort)
 	}
 	log.Printf("[START] Server tunnel listening on %v.", tunnelPort)
 

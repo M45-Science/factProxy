@@ -12,9 +12,10 @@ const protocolVersion = 1
 
 var (
 	tunnelPort, maxTunnels int
-	tunnelListenThrottle   = time.Second
-	tunnelListenMS         int
+	gamePorts              []int
+	tunnelListenThrottle   time.Duration
 	useCompression         bool
+	verboseLog             bool
 
 	tunnelLock  sync.Mutex
 	tunnelTop   int
@@ -92,7 +93,7 @@ func handleTunnelConnection(c net.Conn) {
 	}
 
 	if frameData.frameType == FRAME_HELLO {
-		if protocolVersion == frameData.dataLength {
+		if protocolVersion == frameData.payloadLength {
 			for {
 				fd, err := con.ReadFrame()
 				if err != nil {
@@ -101,7 +102,7 @@ func handleTunnelConnection(c net.Conn) {
 				err = handleFrame(*con, *fd)
 			}
 		} else {
-			log.Printf("Protocol version not compatible: ID: %v, Version: %v", con.ID, frameData.dataLength)
+			log.Printf("Protocol version not compatible: ID: %v, Version: %v", con.ID, frameData.payloadLength)
 		}
 	} else {
 		log.Printf("Did not receive hello frame from ID: %v.", con.ID)
