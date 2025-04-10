@@ -26,18 +26,18 @@ func main() {
 	// Notify for SIGINT (Ctrl+C) and SIGTERM
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	var gpstr string
-	var tlms int
+	var gamePortsStr string
+	var tunnelListenMSStr int
 	flag.IntVar(&tunnelPort, "tunnelPort", defaultTunnelPort, "")
-	flag.StringVar(&gpstr, "gamePorts", defaultGamePorts, "comma-separated port list")
+	flag.StringVar(&gamePortsStr, "gamePorts", defaultGamePorts, "comma-separated port list")
 	flag.IntVar(&maxTunnels, "maxTunnels", defaultMaxTunnels, "")
-	flag.IntVar(&tlms, "tunnelListenThrottleMS", defaultTunnelListenMS, "")
+	flag.IntVar(&tunnelListenMSStr, "tunnelListenThrottleMS", defaultTunnelListenMS, "")
 	flag.BoolVar(&useCompression, "useCompression", defaultCompression, "compress tunnel")
 	flag.BoolVar(&verboseLog, "verboseLog", defaultVerboseLog, "enable or disable verbose (per-frame) logging")
 	flag.Parse()
 
-	parseGamePorts(gpstr)
-	parseTunnelListenThrottle(tlms)
+	parseGamePorts(gamePortsStr)
+	parseTunnelListenThrottle(tunnelListenMSStr)
 
 	go listenForTunnels()
 
@@ -49,8 +49,9 @@ func main() {
 }
 
 func parseGamePorts(input string) {
-	portStringParts := strings.Split(input, ",")
 	gamePorts = []int{}
+
+	portStringParts := strings.Split(input, ",")
 	for _, portStr := range portStringParts {
 		if strings.Contains(portStr, "-") {
 			errStr := "gamePorts: unable to parse port range: %v"
@@ -76,16 +77,29 @@ func parseGamePorts(input string) {
 				lowerPort, upperPort = upperPort, lowerPort
 			}
 			for port := lowerPort; port < upperPort; port++ {
-				gamePorts = append(gamePorts, int(port))
+				addGamePort(int(port))
 			}
+			continue
 		}
-		portNumber, err := strconv.ParseUint(portStr, 10, 64)
+		port, err := strconv.ParseUint(portStr, 10, 64)
 		if err != nil {
 			log.Printf("gamePorts: unable to parse argument: %v (%v)", portStr, err)
 			continue
 		}
-		gamePorts = append(gamePorts, int(portNumber))
+		addGamePort(int(port))
 	}
+}
+
+func addGamePort(port int) bool {
+	for _, gport := range gamePorts {
+		if gport == int(port) {
+			log.Printf("addGamePort: Port %v already in game port list, ignoring.", port)
+			return false
+		}
+	}
+
+	gamePorts = append(gamePorts, int(port))
+	return true
 }
 
 func parseTunnelListenThrottle(input int) {
