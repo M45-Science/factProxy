@@ -2,13 +2,18 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
+	"fmt"
 	"log"
 	"net"
 	"sync"
 	"time"
 )
 
-const protocolVersion = 1
+const (
+	protocolVersion = 1
+	TOP_ID          = 0xFFFFFFFE
+)
 
 var (
 	tunnelPort, maxTunnels int
@@ -31,28 +36,67 @@ type tunnelCon struct {
 	LastActive time.Time
 	RecvBytes  int
 	SendBytes  int
+
+	routeMapLock sync.Mutex
+	IDMap        map[int]*routeData
+	EphemeralMap map[int]*routeData
+	routeTop     int
 }
 
 // Add connection to list, increment count
-func startTunnelConn(c net.Conn) *tunnelCon {
-	tunnelTop++
+func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 
 	tunnelLock.Lock()
 	defer tunnelLock.Unlock()
-	if tunnelList[tunnelTop] == nil {
-		tunnelCount++
-		reader := bufio.NewReader(c)
-		newConn := &tunnelCon{ID: tunnelTop, Reader: reader, Con: c, Born: time.Now()}
-		tunnelList[tunnelTop] = newConn
+	//Loop until we manage to get an ID
+	for {
+		//Chances of this are 0, but handle it anyway
+		if tunnelTop == TOP_ID {
+			tunnelTop = 0
+		}
+		if tunnelList[tunnelTop] == nil {
+			tunnelCount++
+			reader := bufio.NewReader(c)
 
-		log.Printf("[CONNECT] ID: %v connected.", newConn.ID)
-		return newConn
+			//Read frame 0
+			proto, err := binary.ReadUvarint(reader)
+			if err != nil {
+				return nil, fmt.Errorf("startTunnelConn: unable to read frame type: %v", err)
+			}
+
+			if proto != protocolVersion {
+				log.Printf("startTunnelConn: Protocol version not compatible: %v")
+				return nil, nil
+			}
+
+			serverID, err := binary.ReadUvarint(reader)
+			if err != nil {
+				return nil, fmt.Errorf("startTunnelConn: unable to read server id: %v", err)
+			}
+
+			newConn := &tunnelCon{ID: int(serverID), Reader: reader, Con: c}
+			//New ID
+			if serverID == 0 {
+				tunnelTop++
+				serverID = uint64(tunnelTop)
+				newConn.IDMap = map[int]*routeData{}
+				newConn.Born = time.Now()
+				log.Printf("[CONNECT] Tunnel: %v connected.", newConn.ID)
+			} else {
+				log.Printf("[RESUME] Tunnel: %v connection resumed.", newConn.ID)
+			}
+
+			tunnelList[tunnelTop] = newConn
+			go newConn.routeMapCleaner(tunnelTop)
+
+			return newConn, nil
+		}
 	}
 
-	return nil
+	return nil, nil
 }
 
-func (con tunnelCon) Write(buf []byte) error {
+func (con *tunnelCon) Write(buf []byte) error {
 	bufLen := len(buf)
 	l, err := con.Con.Write(buf)
 	if bufLen != l || err != nil {
@@ -71,7 +115,7 @@ func (con *tunnelCon) Close() {
 	tunnelLock.Lock()
 	defer tunnelLock.Unlock()
 	if tunnelList[con.ID] != nil {
-		con.WriteFrame(FRAME_GOODBYE, nil)
+		con.Close()
 		log.Printf("[DISCONNECT] Tunnel ID: %v was disconnected.", con.ID)
 		tunnelCount--
 		delete(tunnelList, con.ID)
@@ -87,27 +131,7 @@ func handleTunnelConnection(c net.Conn) {
 	}
 	defer con.Close()
 
-	frameData, err := con.ReadFrame()
-	if frameData == nil || err != nil {
-		return
-	}
-
-	if frameData.frameType == FRAME_HELLO {
-		if protocolVersion == frameData.payloadLength {
-			// Read loop
-			for {
-				fd, err := con.ReadFrame()
-				if err != nil {
-					return
-				}
-				err = handleFrame(*con, *fd)
-			}
-		} else {
-			log.Printf("Protocol version not compatible: ID: %v, Version: %v", con.ID, frameData.payloadLength)
-		}
-	} else {
-		log.Printf("Did not receive hello frame from ID: %v.", con.ID)
-	}
+	con.ReadFrames()
 }
 
 func closeAllTunnels() {
@@ -117,4 +141,8 @@ func closeAllTunnels() {
 	for _, c := range tunnelList {
 		c.Close()
 	}
+}
+
+func handleFrame(con *tunnelCon, frameData *frameData) error {
+	return nil
 }
