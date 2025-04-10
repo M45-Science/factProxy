@@ -15,23 +15,25 @@ const (
 	defaultTunnelPort     = 30000
 	defaultMaxTunnels     = 100
 	defaultTunnelListenMS = 100
-	defaultGamePorts      = ""
+	defaultGamePorts      = "10000-10017"
+	defaultGamePortOffset = 10000
 	defaultCompression    = true
 	defaultVerboseLog     = true
 )
 
 func main() {
-	// Channel to receive OS signals
 	sigs := make(chan os.Signal, 1)
-	// Notify for SIGINT (Ctrl+C) and SIGTERM
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	var gamePortsStr string
 	var tunnelListenMSStr int
 	flag.IntVar(&tunnelPort, "tunnelPort", defaultTunnelPort, "")
-	flag.StringVar(&gamePortsStr, "gamePorts", defaultGamePorts, "comma-separated port list")
-	flag.IntVar(&maxTunnels, "maxTunnels", defaultMaxTunnels, "")
+	flag.IntVar(&maxTunnels, "maxTunnels", defaultMaxTunnels, "limit number of bridge connections")
 	flag.IntVar(&tunnelListenMSStr, "tunnelListenThrottleMS", defaultTunnelListenMS, "")
+
+	flag.StringVar(&gamePortsStr, "gamePorts", defaultGamePorts, "comma-separated port list. supports ranges")
+	flag.IntVar(&gamePortOffset, "gamePortOffset", defaultGamePortOffset, "on client, offset ports by this value")
+
 	flag.BoolVar(&useCompression, "useCompression", defaultCompression, "compress tunnel")
 	flag.BoolVar(&verboseLog, "verboseLog", defaultVerboseLog, "enable or disable verbose (per-frame) logging")
 	flag.Parse()

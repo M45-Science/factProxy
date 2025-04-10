@@ -94,6 +94,7 @@ func handleTunnelConnection(c net.Conn) {
 
 	if frameData.frameType == FRAME_HELLO {
 		if protocolVersion == frameData.payloadLength {
+			// Read loop
 			for {
 				fd, err := con.ReadFrame()
 				if err != nil {
@@ -112,6 +113,7 @@ func handleTunnelConnection(c net.Conn) {
 func closeAllTunnels() {
 	tunnelLock.Lock()
 	defer tunnelLock.Unlock()
+	log.Printf("Closing tunnels...")
 	for _, c := range tunnelList {
 		c.Close()
 	}
