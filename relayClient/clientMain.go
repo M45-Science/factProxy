@@ -22,9 +22,9 @@ const (
 const (
 	protocolVersion = 1
 
-	ReconDelaySec   = 5
-	maxAttempts     = 2 * (60 / ReconDelaySec)
-	ReconResetAfter = time.Minute * 5
+	reconDelaySec   = 5
+	maxAttempts     = 2 * (60 / reconDelaySec)
+	reconResetAfter = time.Minute * 5
 )
 
 var (
@@ -33,15 +33,24 @@ var (
 	useCompression bool
 	con            net.Conn
 	gamePorts      []int
+
+	outputHTML bool
 )
 
 func main() {
+	var htmlForce bool
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	flag.StringVar(&serverAddr, "server", "m45sci.xyz:30000", "server:port")
-	flag.Parse()
+	flag.BoolVar(&htmlForce, "openList", false, "Write "+htmlFileName+" and then attempt to open it.")
 
+	flag.Parse()
+	if htmlForce {
+		outputHTML = true
+	}
+
+	outputServerList()
 	go connectHandler()
 
 	<-sigs
@@ -56,7 +65,7 @@ func connectHandler() {
 	lastConnect := time.Now()
 	for attempts := 0; attempts < maxAttempts; attempts++ {
 		if attempts != 0 {
-			time.Sleep(time.Duration(ReconDelaySec) * time.Second)
+			time.Sleep(time.Duration(reconDelaySec) * time.Second)
 		}
 
 		log.Printf("Connecting to %v...", serverAddr)
@@ -90,7 +99,7 @@ func connectHandler() {
 		}
 
 		//Eventually reset tries
-		if time.Since(lastConnect) > ReconResetAfter {
+		if time.Since(lastConnect) > reconResetAfter {
 			attempts = 0
 		}
 		lastConnect = time.Now()
@@ -149,7 +158,6 @@ func handleTunnel(c net.Conn) error {
 	log.Printf("Game ports: %v", portsStr)
 
 	for {
-		//Protocol version
 		payloadLen, err := binary.ReadUvarint(reader)
 		if err != nil {
 			return fmt.Errorf("unable to read payload length: %v", err)
