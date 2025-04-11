@@ -128,7 +128,7 @@ func handleTunnel(c net.Conn) error {
 	}
 	serverID = int(sid)
 
-	//Server ID
+	//GamePort Count
 	gamePortCount, err := binary.ReadUvarint(reader)
 	if err != nil {
 		return fmt.Errorf("unable to read gamePortCount: %v", err)

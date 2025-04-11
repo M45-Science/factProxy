@@ -97,12 +97,12 @@ func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 
 			//Reply with serverID, gamePorts
 			var buf []byte
-			buf = binary.AppendVarint(buf, SERVER_KEY)
-			buf = binary.AppendVarint(buf, int64(protocolVersion))
-			buf = binary.AppendVarint(buf, int64(serverID))
-			buf = binary.AppendVarint(buf, int64(len(gamePorts)))
+			buf = binary.AppendUvarint(buf, SERVER_KEY)
+			buf = binary.AppendUvarint(buf, uint64(protocolVersion))
+			buf = binary.AppendUvarint(buf, uint64(serverID))
+			buf = binary.AppendUvarint(buf, uint64(len(gamePorts)))
 			for _, port := range gamePorts {
-				buf = binary.AppendVarint(buf, int64(port))
+				buf = binary.AppendUvarint(buf, uint64(port))
 			}
 			newConn.Write(buf)
 
@@ -156,9 +156,10 @@ func handleTunnelConnection(c net.Conn) {
 func closeAllTunnels() {
 	tunnelLock.Lock()
 	defer tunnelLock.Unlock()
+
 	log.Printf("Closing tunnels...")
 	for _, c := range tunnelList {
-		c.Close()
+		c.Con.Close()
 	}
 }
 

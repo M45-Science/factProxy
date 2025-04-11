@@ -81,7 +81,7 @@ func parseGamePorts(input string) {
 			if lowerPort > upperPort {
 				lowerPort, upperPort = upperPort, lowerPort
 			}
-			for port := lowerPort; port < upperPort; port++ {
+			for port := lowerPort; port <= upperPort; port++ {
 				addGamePort(int(port))
 			}
 			continue
