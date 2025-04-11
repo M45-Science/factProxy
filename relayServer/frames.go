@@ -87,7 +87,6 @@ func listenForTunnels() {
 			conn.Close()
 			continue
 		}
-		log.Printf("[CONNECT] New tunnel: %s", conn.RemoteAddr())
 		go handleTunnelConnection(conn)
 
 		time.Sleep(tunnelListenThrottle)

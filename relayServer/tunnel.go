@@ -90,7 +90,6 @@ func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 				serverID = uint64(tunnelTop)
 				newConn.IDMap = map[int]*routeData{}
 				newConn.Born = time.Now()
-				log.Printf("[CONNECT] Tunnel: %v connected.", newConn.ID)
 			} else {
 				log.Printf("[RESUME] Tunnel: %v connection resumed.", newConn.ID)
 			}
@@ -151,11 +150,13 @@ func handleTunnelConnection(c net.Conn) {
 		log.Printf("handleTunnelConnection: startTunnelConn: %v", err)
 		return
 	}
+	log.Printf("[CONNECT] #%v, %v", con.ID, c.RemoteAddr())
 	defer con.Close()
 
 	err = con.ReadFrames()
 	if err != nil {
 		log.Printf("handleTunnelConnection: %v", err)
+		log.Printf("[DISCONNECT] #%v %v", con.ID, con.Con.RemoteAddr())
 	}
 }
 
