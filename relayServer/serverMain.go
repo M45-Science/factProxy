@@ -43,6 +43,7 @@ func main() {
 	parseGamePorts(gamePortsStr)
 	parseTunnelListenThrottle(tunnelListenMSStr)
 
+	tunnelList = map[int]*tunnelCon{}
 	go listenForTunnels()
 
 	// Graceful exit

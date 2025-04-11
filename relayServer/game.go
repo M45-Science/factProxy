@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net"
 	"time"
 )
@@ -50,14 +51,19 @@ func (con *tunnelCon) addRoute(route *routeData) {
 }
 
 // Automatically creates route if it does not exist
-func (con *tunnelCon) lookupRoute(routeID int) *routeData {
+func (con *tunnelCon) lookupRoute(routeID int, create bool) *routeData {
 	con.routeMapLock.Lock()
 	defer con.routeMapLock.Unlock()
 
 	route := con.IDMap[routeID]
 	if route == nil {
-		newRoute := &routeData{clientID: routeID, tunnel: con, lastActive: time.Now()}
-		newRoute.Birth()
+		if create {
+			newRoute := &routeData{clientID: routeID, tunnel: con, lastActive: time.Now()}
+			newRoute.Birth()
+		} else {
+			log.Printf("lookupRoute: Route ID not found: %v", routeID)
+			return nil
+		}
 	}
 	route.lastActive = time.Now()
 	return route

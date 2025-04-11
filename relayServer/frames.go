@@ -35,12 +35,18 @@ func (con *tunnelCon) ReadFrames() (*frameData, error) {
 		if err != nil {
 			return nil, fmt.Errorf("ReadFrame: unable to read routeID: %v", err)
 		}
-		route := con.lookupRoute(int(routeID))
+		route := con.lookupRoute(int(routeID), false)
+		if route == nil {
+			return nil, fmt.Errorf("ReadFrame: route not found")
+		}
 
 		payloadData := make([]byte, payloadLength)
-		con.Con.Read(payloadData)
+		l, err := con.Con.Read(payloadData)
 		if err != nil {
 			return nil, fmt.Errorf("ReadFrame: unable to read payload data: %v", err)
+		}
+		if l != int(payloadLength) {
+			return nil, fmt.Errorf("invalid payload length: %v", err)
 		}
 
 		sendPacket(route, payloadData)

@@ -59,23 +59,23 @@ func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 			tunnelCount++
 			reader := bufio.NewReader(c)
 
-			//Read frame 0
-			frame, err := binary.ReadUvarint(reader)
+			//Read key
+			key, err := binary.ReadUvarint(reader)
 			if err != nil {
-				return nil, fmt.Errorf("startTunnelConn: unable to read frame type: %v", err)
+				return nil, fmt.Errorf("startTunnelConn: unable to read key: %v", err)
 			}
-			if frame != 0 {
-				return nil, nil
+			if key != CLIENT_KEY {
+				return nil, fmt.Errorf("startTunnelConn: incorrect key.")
 			}
 
 			//Protocol version
 			proto, err := binary.ReadUvarint(reader)
 			if err != nil {
-				return nil, fmt.Errorf("startTunnelConn: unable to read frame type: %v", err)
+				return nil, fmt.Errorf("startTunnelConn: unable to read protocol version: %v", err)
 			}
 			if proto != protocolVersion {
-				log.Printf("startTunnelConn: protocol version not compatible: %v", proto)
-				return nil, nil
+
+				return nil, fmt.Errorf("startTunnelConn: protocol version not compatible: %v", proto)
 			}
 
 			//Server ID
@@ -97,12 +97,12 @@ func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 
 			//Reply with serverID, gamePorts
 			var buf []byte
-			binary.AppendVarint(buf, 0)
-			binary.AppendVarint(buf, int64(protocolVersion))
-			binary.AppendVarint(buf, int64(serverID))
-			binary.AppendVarint(buf, int64(len(gamePorts)))
+			buf = binary.AppendVarint(buf, SERVER_KEY)
+			buf = binary.AppendVarint(buf, int64(protocolVersion))
+			buf = binary.AppendVarint(buf, int64(serverID))
+			buf = binary.AppendVarint(buf, int64(len(gamePorts)))
 			for _, port := range gamePorts {
-				binary.AppendVarint(buf, int64(port))
+				buf = binary.AppendVarint(buf, int64(port))
 			}
 			newConn.Write(buf)
 
