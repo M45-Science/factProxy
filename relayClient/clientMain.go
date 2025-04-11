@@ -33,6 +33,7 @@ var (
 	useCompression bool
 	con            net.Conn
 	gamePorts      []int
+	listeners      []*net.UDPConn
 
 	outputHTML bool
 )
@@ -144,6 +145,7 @@ func handleTunnel(c net.Conn) error {
 	}
 	gamePorts = []int{}
 	portsStr := ""
+	listeners = []*net.UDPConn{}
 	for p := range gamePortCount {
 		port, err := binary.ReadUvarint(reader)
 		if err != nil {
@@ -154,18 +156,45 @@ func handleTunnel(c net.Conn) error {
 			portsStr = portsStr + ", "
 		}
 		portsStr = portsStr + strconv.FormatUint(port, 10)
+
+		laddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(port)}
+		conn, _ := net.ListenUDP("udp", laddr)
+		defer conn.Close()
+		listeners = append(listeners, conn)
 	}
 	log.Printf("Game ports: %v", portsStr)
 
+	go handleGameListens()
+	handleTunnelListen(reader)
+
+	return nil
+}
+
+func handleTunnelListen(reader *bufio.Reader) {
 	for {
 		payloadLen, err := binary.ReadUvarint(reader)
 		if err != nil {
-			return fmt.Errorf("unable to read payload length: %v", err)
+			log.Printf("unable to read payload length: %v", err)
+			return
 		}
 		var payload = make([]byte, payloadLen)
 		con.Read(payload)
 
 		//Process payload
 		log.Printf("Payload: %v", payloadLen)
+	}
+}
+
+func handleGameListens() {
+	for _, port := range listeners {
+		buf := make([]byte, 2048)
+		for {
+			n, addr, err := port.ReadFromUDP(buf)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Read error on %v: %v\n", port.LocalAddr(), err)
+				return
+			}
+			fmt.Printf("Received %d bytes from %v on %v: %s\n", n, addr, port.LocalAddr(), string(buf[:n]))
+		}
 	}
 }
