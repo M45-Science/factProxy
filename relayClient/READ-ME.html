@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Instructions</title>
+  <style>
+    :root {
+      /* Adjust these colors to your preference */
+      --bg-color: #1e1e1e;
+      --text-color: #ffffff;
+      --accent-color: #ff6f3f; /* A nice accent color */
+      --secondary-bg: #2e2e2e;
+      --font-family: sans-serif;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      font-family: var(--font-family);
+      line-height: 1.5;
+    }
+    header {
+      text-align: center;
+      padding: 2rem 1rem 1rem;
+    }
+    header img {
+      max-width: 150px;
+      height: auto;
+      margin-bottom: 1rem;
+    }
+    h1 {
+      color: var(--accent-color);
+      margin-bottom: 0.5rem;
+    }
+    main {
+      background-color: var(--secondary-bg);
+      margin: 0 auto;
+      max-width: 800px;
+      padding: 2rem;
+      border-radius: 8px;
+    }
+    h2 {
+      color: var(--accent-color);
+      margin-top: 2rem;
+      margin-bottom: 1rem;
+    }
+    p {
+      margin: 1rem 0;
+    }
+    a {
+      color: var(--accent-color);
+      font-weight: bold;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    ol, ul {
+      margin: 0 0 1rem 2rem;
+    }
+    footer {
+      text-align: center;
+      margin: 2rem 0 1rem;
+      font-size: 0.9rem;
+      opacity: 0.7;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header & Logo -->
+  <header>
+    <img src="https://m45sci.xyz/m45-2024b-128.png" alt="M45 Logo" />
+    <h1>M45 Relay Client Instructions</h1>
+  </header>
+
+  <!-- Main Content -->
+  <main>
+    <h2>Getting Started</h2>
+    <ol>
+      <li>
+        <strong>Launch the program <code>M45-Relay-Client.exe</code>.</strong><br>
+        This will connect to the relay server and retrieve a list of available servers.
+      </li>
+      <li>
+        The client will automatically generate a file called <code>connect-links.html</code>
+        and attempt to open it in your default browser.
+      </li>
+    </ol>
+
+    <p>
+      If <code>connect-links.html</code> does not open automatically, you can open it manually:
+      <ul>
+        <li>Locate <code>connect-links.html</code> in the same folder as this file.</li>
+        <li>Double-click it or open it via this link: 
+          <a href="connect-links.html">connect-links.html</a>
+        </li>
+      </ul>
+    </p>
+
+    <h2>Factorio (Without Steam)</h2>
+    <p>
+      If you do not have Steam installed, you can still connect in Factorio:
+    </p>
+    <ol>
+      <li>
+        In Factorio, go to <strong>Multiplayer</strong> &rarr; 
+        <strong>Connect to address</strong>.
+      </li>
+      <li>
+        Enter the server address (for example, <code>127.0.0.1:10000</code>) 
+        and click <strong>Connect</strong>.
+      </li>
+    </ol>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    2025 M45-Science
+  </footer>
+
+</body>
+</html>

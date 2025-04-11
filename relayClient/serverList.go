@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"html/template"
 	"log"
 	"os"
@@ -31,7 +32,8 @@ func outputServerList() {
 	data := PageData{Servers: []ServerEntry{}}
 
 	for i, l := range gamePorts {
-		server := ServerEntry{Name: intToLabel(i), Port: l}
+		buf := fmt.Sprintf("Map %v 127.0.0.1:%v", intToLabel(i), l)
+		server := ServerEntry{Name: buf, Port: l}
 		data.Servers = append(data.Servers, server)
 	}
 
