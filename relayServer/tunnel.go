@@ -107,7 +107,7 @@ func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 
 			tunnelList[tunnelTop] = newConn
 
-			go newConn.routeMapCleaner(tunnelTop)
+			go newConn.routeMapCleaner()
 			return newConn, nil
 		}
 

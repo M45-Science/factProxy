@@ -26,7 +26,7 @@ type routeData struct {
 	lastActive time.Time
 }
 
-func (con *tunnelCon) routeMapCleaner(id int) {
+func (con *tunnelCon) routeMapCleaner() {
 	for con != nil {
 		con.routeMapLock.Lock()
 		for r, route := range con.IDMap {
