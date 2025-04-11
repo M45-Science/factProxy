@@ -149,6 +149,7 @@ func handleTunnel(c net.Conn) error {
 	log.Printf("Game ports: %v", portsStr)
 
 	for {
+		time.Sleep(time.Second)
 		//read loop
 	}
 }

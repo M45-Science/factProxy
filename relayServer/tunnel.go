@@ -12,7 +12,7 @@ import (
 
 const (
 	protocolVersion = 1
-	TOP_ID          = 0xFFFFFFFE
+	MAX_ID          = 0xFFFFFFFE
 )
 
 var (
@@ -51,7 +51,7 @@ func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 	//Loop until we manage to get an ID
 	for {
 		//Chances of this are 0, but handle it anyway
-		if tunnelTop == TOP_ID {
+		if tunnelTop == MAX_ID {
 			tunnelTop = 0
 		}
 		tunnelTop++
@@ -111,7 +111,10 @@ func startTunnelConn(c net.Conn) (*tunnelCon, error) {
 			go newConn.routeMapCleaner(tunnelTop)
 			return newConn, nil
 		}
+
+		time.Sleep(time.Second)
 	}
+
 }
 
 func (con *tunnelCon) Write(buf []byte) error {
@@ -150,7 +153,10 @@ func handleTunnelConnection(c net.Conn) {
 	}
 	defer con.Close()
 
-	con.ReadFrames()
+	err = con.ReadFrames()
+	if err != nil {
+		log.Printf("handleTunnelConnection: %v", err)
+	}
 }
 
 func closeAllTunnels() {

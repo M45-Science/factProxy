@@ -24,31 +24,32 @@ type payloadData struct {
 	contents      []byte
 }
 
-func (con *tunnelCon) ReadFrames() (*frameData, error) {
+func (con *tunnelCon) ReadFrames() error {
 
 	for {
 		payloadLength, err := binary.ReadUvarint(con.Reader)
 		if err != nil {
-			return nil, fmt.Errorf("ReadFrame: unable to read payload length: %v", err)
+			return fmt.Errorf("ReadFrame: unable to read payload length: %v", err)
 		}
 		routeID, err := binary.ReadUvarint(con.Reader)
 		if err != nil {
-			return nil, fmt.Errorf("ReadFrame: unable to read routeID: %v", err)
+			return fmt.Errorf("ReadFrame: unable to read routeID: %v", err)
 		}
 		route := con.lookupRoute(int(routeID), false)
 		if route == nil {
-			return nil, fmt.Errorf("ReadFrame: route not found")
+			return fmt.Errorf("ReadFrame: route not found")
 		}
 
 		payloadData := make([]byte, payloadLength)
 		l, err := con.Con.Read(payloadData)
 		if err != nil {
-			return nil, fmt.Errorf("ReadFrame: unable to read payload data: %v", err)
+			return fmt.Errorf("ReadFrame: unable to read payload data: %v", err)
 		}
 		if l != int(payloadLength) {
-			return nil, fmt.Errorf("invalid payload length: %v", err)
+			return fmt.Errorf("invalid payload length: %v", err)
 		}
 
+		log.Println("meep")
 		sendPacket(route, payloadData)
 	}
 }
