@@ -6,60 +6,33 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 )
+
+var outputHTML, forceHTML bool
 
 const htmlFileName = "connect-links.html"
 
-func openInBrowser(path string) error {
-	var cmd *exec.Cmd
-
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
-	case "darwin":
-		cmd = exec.Command("open", path)
-	default: // linux, freebsd, etc.
-		cmd = exec.Command("xdg-open", path)
-	}
-
-	return cmd.Start()
-}
-
-type Server struct {
+type ServerEntry struct {
 	Name string
 	Port int
 }
 
 type PageData struct {
-	Servers []Server
+	Servers []ServerEntry
 }
 
 func outputServerList() {
-	if !outputHTML {
+
+	if !outputHTML && !forceHTML {
 		return
 	}
 
-	data := PageData{
-		Servers: []Server{
-			{"Map A", 20000},
-			{"Map B", 20001},
-			{"Map C", 20002},
-			{"Map D", 20003},
-			{"Map E", 20004},
-			{"Map F", 20005},
-			{"Map G", 20006},
-			{"Map H", 20007},
-			{"Map I", 20008},
-			{"Map J", 20009},
-			{"Map K", 20010},
-			{"Map L", 20011},
-			{"Map M", 20012},
-			{"Map N", 20013},
-			{"Map O", 20014},
-			{"Map P", 20015},
-			{"Map Q", 20016},
-			{"Map R", 20017},
-		},
+	data := PageData{Servers: []ServerEntry{}}
+
+	for i, l := range gamePorts {
+		server := ServerEntry{Name: intToLabel(i), Port: l}
+		data.Servers = append(data.Servers, server)
 	}
 
 	tmpl, err := template.New("page").Parse(pageTemplate)
@@ -85,4 +58,36 @@ func outputServerList() {
 	} else {
 		log.Printf("The server list should now be open!")
 	}
+}
+
+func openInBrowser(path string) error {
+	var cmd *exec.Cmd
+
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+	case "darwin":
+		cmd = exec.Command("open", path)
+	default: // linux, freebsd, etc.
+		cmd = exec.Command("xdg-open", path)
+	}
+
+	return cmd.Start()
+}
+
+// intToLabel converts an integer to a string like "a".."zzz"
+func intToLabel(n int) string {
+	if n < 0 {
+		return ""
+	}
+	result := ""
+	for {
+		rem := n % 26
+		result = string('a'+rem) + result
+		n = n/26 - 1
+		if n < 0 {
+			break
+		}
+	}
+	return strings.ToUpper(result)
 }
