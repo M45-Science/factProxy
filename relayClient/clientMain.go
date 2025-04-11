@@ -149,7 +149,15 @@ func handleTunnel(c net.Conn) error {
 	log.Printf("Game ports: %v", portsStr)
 
 	for {
-		time.Sleep(time.Second)
-		//read loop
+		//Protocol version
+		payloadLen, err := binary.ReadUvarint(reader)
+		if err != nil {
+			return fmt.Errorf("unable to read payload length: %v", err)
+		}
+		var payload = make([]byte, payloadLen)
+		con.Read(payload)
+
+		//Process payload
+		log.Printf("Payload: %v", payloadLen)
 	}
 }
