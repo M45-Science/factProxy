@@ -141,7 +141,7 @@ const pageTemplate = `
   </div>
 
   <footer>
-    &copy; 2025 M45-Science
+    2025 M45-Science
   </footer>
 </body>
 </html>
